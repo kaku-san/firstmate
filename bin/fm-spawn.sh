@@ -1254,6 +1254,10 @@ upgrade_legacy_brief() {
 }
 
 if [ "$KIND" != secondmate ]; then
+  if [ ! -e "$BRIEF" ] && [ ! -L "$BRIEF" ]; then
+    echo "error: no brief at $BRIEF" >&2
+    exit 1
+  fi
   upgrade_legacy_brief || exit 1
 else
   [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
