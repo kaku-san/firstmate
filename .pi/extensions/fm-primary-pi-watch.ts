@@ -105,7 +105,7 @@ const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 100
 // Away mode can begin while an arm child is blocked inside a long watcher cycle,
 // so the transition cannot be observed at a decision point alone. This bounded
 // unref'd poll is the minimum needed to notice it; it never keeps Pi alive.
-const afkPollMs = positiveInteger("FM_PI_AFK_POLL_MS", 2000);
+const afkPollMs = 2000;
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -502,10 +502,9 @@ export default function (pi: ExtensionAPI) {
   // adds no new teardown mechanism. Its close handler runs normally; every path
   // it can reach (scheduleRetry, restoreAfterActionableClose, sendWake) is
   // already away-gated above, so the retirement is silent rather than reported
-  // as a broken cycle. An unconfirmed retirement is deliberately NOT alarmed
-  // here: bin/fm-afk-launch.sh's readiness gate is the one owner of that
-  // diagnostic and refuses away-mode entry with the concrete blocker, which
-  // keeps this to one bounded signal instead of a second alerting path.
+  // as a broken cycle. An unconfirmed retirement deliberately raises no alarm
+  // here; ownership readiness is deferred, so this handoff remains best-effort
+  // and silent.
   async function retireArmForAwayMode(owner: SessionGeneration): Promise<void> {
     if (owner.retryTimer) {
       clearTimeout(owner.retryTimer);
@@ -521,7 +520,7 @@ export default function (pi: ExtensionAPI) {
     awayModeSeen = active;
     if (active) {
       void retireArmForAwayMode(generation).catch(() => {
-        // Retirement is best-effort here; away-mode entry verifies ownership.
+        // Retirement is intentionally best-effort and silent here.
       });
       return;
     }
