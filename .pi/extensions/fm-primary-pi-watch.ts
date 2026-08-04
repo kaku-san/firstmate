@@ -8,9 +8,15 @@
 // a new live generation so monitoring can arm again without restarting Pi. Terminal
 // quit leaves the final generation stopped so late callbacks cannot rearm. Stale
 // callbacks from a prior generation are no-ops against the active replacement.
+//
+// Away-mode ownership: while state/.afk exists the away daemon owns the watcher,
+// so this extension neither arms nor delivers. It requests retirement of a live
+// arm child on entry and makes one idempotent restoration attempt on exit.
+// docs/watcher-continuity.md owns that ownership contract; the gates here are
+// its enforcement on the Pi path.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -84,6 +90,7 @@ const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const config = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
 const armScript = `${fmRoot}/bin/fm-watch-arm.sh`;
 const marker = `${state}/.pi-watch-extension-loaded`;
+const afkFlag = `${state}/.afk`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
@@ -96,6 +103,10 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+// Away mode can begin while an arm child is blocked inside a long watcher cycle,
+// so the transition cannot be observed at a decision point alone. This bounded
+// unref'd poll is the minimum needed to notice it; it never keeps Pi alive.
+const afkPollMs = 2000;
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
@@ -140,6 +151,18 @@ function lockOwnership(): LockOwnership {
     if (!pid || pid === "1") break;
   }
   return pidAlive(lockPid) ? "other" : "missing";
+}
+
+// Away mode owns watcher supervision (AGENTS.md section 8; the /afk skill).
+// While the durable flag exists the away daemon runs the watcher as its own
+// child, so a Pi-owned cycle would fight it for the singleton lock: this
+// extension's arm runs `--restart`, which stops whatever pid this home's watch
+// lock names - including the daemon's watcher. bin/fm-claude-stop-autoarm.sh
+// applies the same gate on the Claude path; this is the Pi-side equivalent.
+// The durable flag is the whole channel, so no new state or configuration is
+// introduced and reverting this file restores the previous behavior exactly.
+function awayModeActive(): boolean {
+  return existsSync(afkFlag);
 }
 
 function markLoaded(): void {
@@ -239,6 +262,12 @@ export default function (pi: ExtensionAPI) {
 
   async function sendWake(owner: SessionGeneration, message: string): Promise<void> {
     if (!generationIsLive(owner)) return;
+    // The away daemon owns triage while the flag exists. A wake observed by an
+    // arm child that outlived the transition must not reach the model directly,
+    // or away mode's whole purpose is bypassed. The wake itself is not lost: the
+    // watcher enqueues it durably before exiting, and the return catch-up drains
+    // state/.wake-queue.
+    if (awayModeActive()) return;
     const content = encodeFirstmateOperationalInput(
       "watcher",
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
@@ -295,6 +324,9 @@ export default function (pi: ExtensionAPI) {
     let failure = "";
     for (let attempt = 0; attempt <= retryLimit; attempt += 1) {
       if (!generationIsLive(owner)) return "";
+      // Away mode taking over mid-restore is a correct handoff, not a failure:
+      // return empty so no continuity failure is surfaced for it.
+      if (awayModeActive()) return "";
       const replacement = startArm(owner, predecessorArmPid);
       const successorChild = owner.child;
       if (replacement.ok && successorChild && await waitForReadiness(successorChild)) return "";
@@ -317,6 +349,10 @@ export default function (pi: ExtensionAPI) {
 
   function scheduleRetry(owner: SessionGeneration, message: string, predecessorArmPid: string): void {
     if (!generationIsLive(owner) || owner.child || owner.retryTimer) return;
+    // Never retry into away mode's watcher: the daemon owns the singleton now.
+    // Silent because this is a correct handoff, and because a surfaced failure
+    // here would wake the model that away mode exists to keep asleep.
+    if (awayModeActive()) return;
     const ownership = lockOwnership();
     if (ownership !== "owned") {
       surfaceFailure(owner, `watcher: FAILED - Pi extension cannot restore continuity because this session no longer owns the lock\n${message}`);
@@ -341,6 +377,15 @@ export default function (pi: ExtensionAPI) {
 
   function startArm(owner: SessionGeneration, predecessorArmPid = ""): ArmResult {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
+    // ok:true deliberately. Declining to arm during away mode is the correct
+    // outcome, not a failure, so it must not consume the continuity retry budget
+    // or be reported to the captain as a broken watcher cycle.
+    if (awayModeActive()) {
+      return {
+        ok: true,
+        message: "watcher: unchanged - away mode owns watcher supervision; the away daemon runs the watcher until away mode ends",
+      };
+    }
     const ownership = lockOwnership();
     if (ownership === "other") return { ok: false, message: "watcher: read-only - session lock is held by another firstmate session" };
     if (ownership === "missing") {
@@ -453,9 +498,45 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
+  // Begin handing the singleton to the away daemon. The arm child is retired
+  // through the same bounded SIGTERM-and-confirm path used for an unready
+  // successor, so this adds no new teardown mechanism. Its close handler runs
+  // normally; every path it can reach (scheduleRetry,
+  // restoreAfterActionableClose, sendWake) is already away-gated above, so the
+  // retirement is silent rather than reported as a broken cycle. An unconfirmed
+  // retirement deliberately raises no alarm here; ownership readiness is
+  // deferred, so this handoff remains best-effort and silent.
+  async function retireArmForAwayMode(owner: SessionGeneration): Promise<void> {
+    if (owner.retryTimer) {
+      clearTimeout(owner.retryTimer);
+      owner.retryTimer = null;
+    }
+    await retireArm(owner.child);
+  }
+
+  let awayModeSeen = awayModeActive();
+  const awayModeTimer = setInterval(() => {
+    const active = awayModeActive();
+    if (active === awayModeSeen) return;
+    awayModeSeen = active;
+    if (active) {
+      void retireArmForAwayMode(generation).catch(() => {
+        // Retirement is intentionally best-effort and silent here.
+      });
+      return;
+    }
+    // Away mode ended: make one restoration attempt. startArm's generation,
+    // session-lock, existing-child, and scheduled-retry gates keep the attempt
+    // idempotent and prevent a race with return catch-up from producing a second
+    // cycle.
+    if (generationIsLive(generation)) startArm(generation);
+  }, afkPollMs);
+  awayModeTimer.unref();
+
   pi.on?.("session_start", () => {
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
+    awayModeSeen = awayModeActive();
     markLoaded();
   });
   pi.on?.("session_shutdown", () => {

@@ -50,7 +50,8 @@ batched digest rather than per-wake injections.
    `state/.afk` exists, and stays quiet otherwise.
 
 3. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
-   its child; the singleton lock no-ops a stray arm harmlessly.
+   its child.
+   The singleton lock alone does not make a separate arm safe; [`docs/watcher-continuity.md`](../../../docs/watcher-continuity.md#away-mode-ownership) owns the automatic-arm and delivery gates that protect the daemon's cycle.
 
 4. **Acknowledge** in `AGENTS.md` section 9 language: "Captain, away mode is active; I will batch routine updates and surface only decisions, failures, credentials, or review-ready work until you return."
 

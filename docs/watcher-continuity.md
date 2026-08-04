@@ -19,6 +19,18 @@ Only an exhausted failure with no verified watcher emits one last-resort notice 
 The Claude turn-end guard owns the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
+## Away-mode ownership
+
+Away mode owns watcher supervision: while `state/.afk` exists the away daemon runs `bin/fm-watch.sh` as its own child.
+The durable flag is the whole signalling channel, so an adapter needs no new state, configuration, or coordination to honour it.
+
+`bin/fm-watch-arm.sh --restart` stops whatever pid this home's watch lock names and cannot distinguish the daemon's watcher from a stale one.
+A plain `arm` attaches instead of stopping, but attaching still routes the wake to the attaching adapter, so the gate covers arming **and** delivery.
+`bin/fm-claude-stop-autoarm.sh` applies this gate on the Claude path, and `.pi/extensions/fm-primary-pi-watch.ts` applies it on the Pi path: neither starts an arm, retries after a close, nor delivers a wake while the flag exists.
+Pi checks the flag before session-lock ownership, so `fm_watch_arm_pi` returns a non-failing ownership no-op during away mode even when the lock is missing or belongs to another session.
+Pi also asks a live arm child to retire when the flag appears and waits a bounded period for confirmation, then makes one idempotent restoration attempt when the flag clears; the live-generation, session-lock, existing-child, and scheduled-retry gates still apply.
+Suppressed delivery loses nothing, because the watcher enqueues each wake to `state/.wake-queue` before exiting and the return catch-up in `bin/fm-afk-return.sh` drains it.
+
 ## Actionable wake ordering
 
 After an actionable Pi or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
@@ -62,6 +74,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
+It also covers the away-mode no-op across missing, foreign, and owned session locks, suppressed actionable delivery, live-child retirement on entry, and one eligible restoration cycle on exit.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
