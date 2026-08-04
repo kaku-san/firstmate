@@ -1,5 +1,7 @@
 Mode: Pi extension background wake.
 
+While away mode is active the extension itself declines to arm or deliver, so `fm_watch_arm_pi` returns an ownership no-op and needs no manual suppression.
+
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e __FM_PI_TURNEND_EXT__ -e __FM_PI_EXT__` as a trust-free fallback.

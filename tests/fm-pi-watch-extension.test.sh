@@ -59,6 +59,131 @@ export const Type = {
 JS
 }
 
+# Away mode owns watcher supervision, so the Pi extension must neither arm nor
+# deliver while state/.afk exists. Without the gate the extension keeps running
+# bin/fm-watch-arm.sh --restart, which stops whatever pid this home's watch lock
+# names - including the away daemon's own watcher child - and delivers wakes
+# straight to the model that away mode exists to keep asleep.
+test_pi_away_mode_owns_watcher_supervision() {
+  local repo home plugin child_pid_file arm_log out status
+  repo="$TMP_ROOT/pi-away-mode-root"
+  home="$TMP_ROOT/pi-away-mode-home"
+  child_pid_file="$TMP_ROOT/pi-away-mode-child.pid"
+  arm_log="$TMP_ROOT/pi-away-mode-arm.log"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  # Stays alive until retired, then closes ACTIONABLY: an actionable close is the
+  # delivery path, so a wake suppressed here proves the gate and not just a quiet
+  # teardown.
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'watcher: started pid=%s\n' "$$"
+printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
+printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+trap 'printf "signal: %s/away-demo.status\n" "${FM_HOME:?}"; exit 0' TERM INT
+while :; do sleep 0.2; done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_CHILD_PID_FILE="$child_pid_file" FM_ARM_LOG="$arm_log" FM_PI_AFK_POLL_MS=50 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=2 node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const afkFlag = `${process.env.FM_HOME}/state/.afk`;
+let prompt = "";
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") pi.tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompt = message;
+  },
+  events: { on() {} },
+};
+
+function pidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(pred, label, attempts = 400) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+
+// --- away mode active before the first arm: declines, and spawns nothing ----
+writeFileSync(afkFlag, `${Math.floor(Date.now() / 1000)}\n`);
+mod.default(pi);
+const assertAwayNoop = async (label) => {
+  const declined = await pi.tool.execute(label, {}, undefined, undefined, {});
+  if (declined.details?.ok !== true) {
+    throw new Error(`${label} declining during away mode must not be a failure: ${JSON.stringify(declined.details)}`);
+  }
+  if (!String(declined.details.message).includes("away mode owns watcher supervision")) {
+    throw new Error(`${label} away-mode decline lacked its reason: ${JSON.stringify(declined.details)}`);
+  }
+};
+await assertAwayNoop("away-active-missing-lock");
+const other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+try {
+  writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${other.pid}\n`);
+  await assertAwayNoop("away-active-foreign-lock");
+} finally {
+  other.kill("SIGTERM");
+}
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (existsSync(process.env.FM_ARM_LOG)) {
+  throw new Error(`an arm child ran while away mode owned supervision: ${readFileSync(process.env.FM_ARM_LOG, "utf8").trim()}`);
+}
+
+// --- away mode ends: exactly one Pi-owned cycle is restored ------------------
+rmSync(afkFlag);
+await waitFor(() => existsSync(process.env.FM_CHILD_PID_FILE), "restored cycle after away mode ended");
+const restored = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
+await waitFor(() => pidAlive(restored), "restored child alive");
+const armedPids = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split(/\n/).filter(Boolean);
+if (armedPids.length !== 1) {
+  throw new Error(`away-mode exit must restore exactly one cycle, got ${armedPids.length}: ${armedPids.join(",")}`);
+}
+
+// --- away mode returns mid-cycle: the live child is retired, silently --------
+writeFileSync(afkFlag, `${Math.floor(Date.now() / 1000)}\n`);
+await waitFor(() => !pidAlive(restored), "live arm child retired on away-mode entry");
+await new Promise((resolve) => setTimeout(resolve, 300));
+if (prompt) {
+  throw new Error(`a wake was delivered to the model during away mode: ${prompt}`);
+}
+const afterRetire = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split(/\n/).filter(Boolean);
+if (afterRetire.length !== 1) {
+  throw new Error(`away-mode entry must not start another cycle, got ${afterRetire.length}: ${afterRetire.join(",")}`);
+}
+
+// --- a redundant repair call while away stays a non-failing no-op ------------
+const redundant = await pi.tool.execute("away-redundant", {}, undefined, undefined, {});
+if (redundant.details?.ok !== true || !String(redundant.details.message).includes("away mode owns watcher supervision")) {
+  throw new Error(`redundant away-mode call must stay an ownership no-op: ${JSON.stringify(redundant.details)}`);
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi extension must leave watcher supervision to away mode"
+  [ -z "$out" ] || fail "Pi away-mode ownership test printed output: $out"
+  pass "Pi extension hands watcher supervision to away mode and restores one cycle on return"
+}
+
 test_pi_extension_reports_external_healthy_watcher() {
   local repo home plugin out status
   repo="$TMP_ROOT/pi-external-healthy-root"
@@ -2124,6 +2249,7 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
+test_pi_away_mode_owns_watcher_supervision
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop

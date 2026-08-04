@@ -19,6 +19,17 @@ Only an exhausted failure with no verified watcher emits one last-resort notice 
 The Claude turn-end guard owns the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
 While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
 
+## Away-mode ownership
+
+Away mode owns watcher supervision: while `state/.afk` exists the away daemon runs `bin/fm-watch.sh` as its own child, and no other owner may hold that singleton.
+The durable flag is the whole signalling channel, so an adapter needs no new state, configuration, or coordination to honour it.
+
+Every adapter that re-arms automatically must gate on that flag, because `bin/fm-watch-arm.sh --restart` stops whatever pid this home's watch lock names and cannot distinguish the daemon's watcher from a stale one.
+A plain `arm` attaches instead of stopping, but attaching still routes the wake to the attaching adapter, so the gate covers arming **and** delivery.
+`bin/fm-claude-stop-autoarm.sh` applies this on the Claude path, and `.pi/extensions/fm-primary-pi-watch.ts` applies it on the Pi path: neither arms, retries, nor delivers a wake while the flag exists.
+Pi additionally retires a live arm child when the flag appears, through its bounded terminate-and-confirm path, and restores exactly one cycle when the flag clears.
+Suppressed delivery loses nothing, because the watcher enqueues each wake to `state/.wake-queue` before exiting and the return catch-up in `bin/fm-afk-return.sh` drains it.
+
 ## Actionable wake ordering
 
 After an actionable Pi or OpenCode child close, the adapter starts and verifies one singleton successor before it delivers the original wake.
