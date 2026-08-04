@@ -10,9 +10,10 @@
 // callbacks from a prior generation are no-ops against the active replacement.
 //
 // Away-mode ownership: while state/.afk exists the away daemon owns the watcher,
-// so this extension neither arms nor delivers. It retires a live arm child on
-// entry and restores exactly one cycle on exit. docs/watcher-continuity.md owns
-// that ownership contract; the gates here are its enforcement on the Pi path.
+// so this extension neither arms nor delivers. It requests retirement of a live
+// arm child on entry and makes one idempotent restoration attempt on exit.
+// docs/watcher-continuity.md owns that ownership contract; the gates here are
+// its enforcement on the Pi path.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -497,14 +498,14 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  // Hand the singleton to the away daemon. The arm child is retired through the
-  // same bounded SIGTERM-and-confirm path used for an unready successor, so this
-  // adds no new teardown mechanism. Its close handler runs normally; every path
-  // it can reach (scheduleRetry, restoreAfterActionableClose, sendWake) is
-  // already away-gated above, so the retirement is silent rather than reported
-  // as a broken cycle. An unconfirmed retirement deliberately raises no alarm
-  // here; ownership readiness is deferred, so this handoff remains best-effort
-  // and silent.
+  // Begin handing the singleton to the away daemon. The arm child is retired
+  // through the same bounded SIGTERM-and-confirm path used for an unready
+  // successor, so this adds no new teardown mechanism. Its close handler runs
+  // normally; every path it can reach (scheduleRetry,
+  // restoreAfterActionableClose, sendWake) is already away-gated above, so the
+  // retirement is silent rather than reported as a broken cycle. An unconfirmed
+  // retirement deliberately raises no alarm here; ownership readiness is
+  // deferred, so this handoff remains best-effort and silent.
   async function retireArmForAwayMode(owner: SessionGeneration): Promise<void> {
     if (owner.retryTimer) {
       clearTimeout(owner.retryTimer);
@@ -524,9 +525,10 @@ export default function (pi: ExtensionAPI) {
       });
       return;
     }
-    // Away mode ended: restore exactly one Pi-owned cycle. startArm is
-    // idempotent against an existing child or scheduled retry, so a restore
-    // that races the return catch-up cannot produce a second cycle.
+    // Away mode ended: make one restoration attempt. startArm's generation,
+    // session-lock, existing-child, and scheduled-retry gates keep the attempt
+    // idempotent and prevent a race with return catch-up from producing a second
+    // cycle.
     if (generationIsLive(generation)) startArm(generation);
   }, afkPollMs);
   awayModeTimer.unref();

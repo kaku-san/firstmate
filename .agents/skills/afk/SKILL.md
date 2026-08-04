@@ -51,9 +51,7 @@ batched digest rather than per-wake injections.
 
 3. **Do not separately arm `fm-watch.sh`.** The daemon manages the watcher as
    its child.
-   A plain `arm` no-ops against the singleton lock, but `bin/fm-watch-arm.sh --restart` does **not**:
-   it stops whatever pid this home's watch lock names, including the daemon's own watcher child.
-   Harnesses that re-arm automatically therefore gate on `state/.afk` rather than relying on the lock to absorb it, and `docs/watcher-continuity.md` owns that ownership contract.
+   The singleton lock alone does not make a separate arm safe; [`docs/watcher-continuity.md`](../../../docs/watcher-continuity.md#away-mode-ownership) owns the automatic-arm and delivery gates that protect the daemon's cycle.
 
 4. **Acknowledge** in `AGENTS.md` section 9 language: "Captain, away mode is active; I will batch routine updates and surface only decisions, failures, credentials, or review-ready work until you return."
 

@@ -1,6 +1,6 @@
 Mode: Pi extension background wake.
 
-While away mode is active the extension itself declines to arm or deliver, so `fm_watch_arm_pi` returns an ownership no-op and needs no manual suppression.
+While away mode is active the extension follows the ownership gate in [`docs/watcher-continuity.md`](../watcher-continuity.md#away-mode-ownership): it declines to arm or deliver, so `fm_watch_arm_pi` returns a non-failing ownership no-op and needs no manual suppression.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
