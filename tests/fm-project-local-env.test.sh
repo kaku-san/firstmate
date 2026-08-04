@@ -3,9 +3,9 @@
 #
 # The regression fixture is a real git project copy whose .env.local exists only
 # in the registered primary. It uses dummy values and asserts only presence,
-# source categories, and redaction. The spawn case captures the public launch
-# command through a fake tmux backend to prove path metadata is propagated but
-# local values are not.
+# source categories, and redaction. The spawn case executes a harmless fake
+# harness through a fake tmux backend to prove the isolated worker can invoke
+# the inherited checker without receiving local values.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -85,6 +85,17 @@ test_true_absence_remains_absent() {
     "an empty local assignment was treated as present"
   assert_contains "$out" 'OPENROUTER_API_KEY: absent' \
     "an empty quoted local assignment was treated as present"
+
+  printf '%s\n' \
+    'PARALLEL_API_KEY= # intentionally unset' \
+    'OPENROUTER_API_KEY="" # TODO' > "$isolated/.env.local"
+  out=$(run_check "$primary" "$isolated" PARALLEL_API_KEY OPENROUTER_API_KEY)
+  status=$?
+  expect_code 1 "$status" "commented empty local assignments should remain absent"
+  assert_contains "$out" 'PARALLEL_API_KEY: absent' \
+    "an empty local assignment with an inline comment was treated as present"
+  assert_contains "$out" 'OPENROUTER_API_KEY: absent' \
+    "an empty quoted local assignment with an inline comment was treated as present"
   pass "true absence, including empty local assignments, remains absent"
 }
 
@@ -160,50 +171,82 @@ test_unsafe_boundary_stops_safely() {
 }
 
 write_spawn_fakebin() {
-  local dir=$1 fakebin log wt
+  local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  log=$2
-  wt=$3
-  cat > "$fakebin/tmux" <<SH
+  cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "\$*" in
-  *"#{pane_current_path}"*) printf '%s\\n' '$wt'; exit 0 ;;
-  *"send-keys"*) printf '%s\\n' "\$*" >> '$log'; exit 0 ;;
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "$FM_FAKE_PANE_PATH"; exit 0 ;;
   *"#{window_name}"*) exit 0 ;;
-  *"#{window_id}"*) printf '%%1\\n'; exit 0 ;;
-  *"#S"*) printf 'fake-session\\n'; exit 0 ;;
-  *"pane_id"*) printf '%%1\\n'; exit 0 ;;
+  *"#{window_id}"*) printf '%%1\n'; exit 0 ;;
+  *"#S"*) printf 'fake-session\n'; exit 0 ;;
+  *"pane_id"*) printf '%%1\n'; exit 0 ;;
 esac
+if [ "${1:-}" = send-keys ]; then
+  prev=
+  last=
+  literal=0
+  for arg in "$@"; do
+    if [ "$prev" = -l ]; then
+      printf '%s\n' "$arg" >> "$FM_FAKE_LAUNCH_LOG"
+      printf '%s\n' "$arg" > "$FM_FAKE_PENDING_LAUNCH"
+      literal=1
+    fi
+    prev=$arg
+    last=$arg
+  done
+  if [ "$literal" -eq 0 ] && [ "$last" = Enter ] && [ -s "$FM_FAKE_PENDING_LAUNCH" ]; then
+    launch=$(cat "$FM_FAKE_PENDING_LAUNCH")
+    (cd "$FM_FAKE_PANE_PATH" && bash -c "$launch") > "$FM_FAKE_WORKER_LOG" 2>&1
+    printf '%s\n' "$?" > "$FM_FAKE_WORKER_STATUS"
+  fi
+  exit 0
+fi
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/local-env-worker" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'worker-cwd=%s\n' "$(pwd -P)"
+exec "$FM_PROJECT_LOCAL_ENV_CHECK" check PARALLEL_API_KEY OPENROUTER_API_KEY
+SH
+  chmod +x "$fakebin/local-env-worker"
   fm_fake_exit0 "$fakebin" treehouse
   printf '%s\n' "$fakebin"
 }
 
-test_spawn_exports_only_path_metadata() {
-  local case_dir home primary isolated log fakebin id out status launch
+test_spawn_worker_resolves_primary_local_presence() {
+  local case_dir home primary isolated isolated_real log pending worker_log
+  local worker_status worker_out fakebin id out status launch
   case_dir="$TMP_ROOT/spawn-boundary"
   home="$case_dir/home"
   primary="$case_dir/primary"
   isolated="$case_dir/isolated"
   log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
   id=local-env-spawn-z1
   mkdir -p "$home/data/$id" "$home/state" "$home/config"
-  printf 'codex\n' > "$home/config/crew-harness"
   fm_git_worktree "$primary" "$isolated" spawn-boundary
+  isolated_real=$(cd "$isolated" && pwd -P)
   write_dummy_env "$primary"
   printf 'brief\n' > "$home/data/$id/brief.md"
-  fakebin=$(write_spawn_fakebin "$case_dir/fake" "$log" "$isolated")
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 TMUX='fake,1,0' PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$primary" --mode no-mistakes --yolo off 2>&1)
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" FM_FAKE_PENDING_LAUNCH="$pending" \
+    FM_FAKE_WORKER_LOG="$worker_log" FM_FAKE_WORKER_STATUS="$worker_status" \
+    TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
   status=$?
   expect_code 0 "$status" "spawn should publish the local-env task boundary"
-  launch=$(grep -F -- '-l ' "$log" | tail -n 1)
+  launch=$(cat "$log")
   assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_CHECK=' \
     "spawn did not expose the executable local-env checker"
   assert_contains "$launch" 'FM_PRIMARY_PROJECT_DIR=' \
@@ -212,6 +255,15 @@ test_spawn_exports_only_path_metadata() {
     "spawn did not expose the isolated project path"
   assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
     "spawn did not expose the supported local source name"
+  worker_out=$(cat "$worker_log")
+  expect_code 0 "$(cat "$worker_status")" \
+    "the isolated fake harness should resolve primary-local provider presence"
+  assert_contains "$worker_out" "worker-cwd=$isolated_real" \
+    "the fake harness did not execute from the isolated project copy"
+  assert_contains "$worker_out" 'PARALLEL_API_KEY: present source=registered-primary/.env.local' \
+    "the worker did not find primary-local PARALLEL_API_KEY presence"
+  assert_contains "$worker_out" 'OPENROUTER_API_KEY: present source=registered-primary/.env.local' \
+    "the worker did not find primary-local OPENROUTER_API_KEY presence"
   assert_not_contains "$launch" 'dummy-parallel-value' \
     "spawn copied the parallel dummy value into the worker command"
   assert_not_contains "$launch" 'dummy-openrouter-value' \
@@ -220,9 +272,13 @@ test_spawn_exports_only_path_metadata() {
     "spawn propagated an unrelated local secret"
   assert_not_contains "$out" 'dummy-' \
     "spawn output exposed a local value"
+  assert_not_contains "$worker_out" 'dummy-' \
+    "the worker checker output exposed a local value"
+  assert_not_contains "$worker_out" 'UNRELATED_LOCAL_SECRET' \
+    "the worker checker inspected or propagated an unrelated local secret"
   assert_no_grep 'dummy-' "$home/state/$id.meta" \
     "spawn metadata retained a local value"
-  pass "spawn propagates path-only local-env metadata without exporting local values"
+  pass "isolated worker resolves primary-local presence through path-only metadata"
 }
 
 test_brief_carries_the_boundary_contract() {
@@ -247,6 +303,6 @@ test_primary_local_presence_is_found_without_exposing_values
 test_true_absence_remains_absent
 test_process_and_isolated_sources_are_presence_only
 test_unsafe_boundary_stops_safely
-test_spawn_exports_only_path_metadata
+test_spawn_worker_resolves_primary_local_presence
 test_brief_carries_the_boundary_contract
 printf '# all fm-project-local-env tests passed\n'

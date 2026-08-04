@@ -8,6 +8,8 @@
 # FM_PROJECT_LOCAL_ENV_FILE for the supported local source. The only supported
 # source name is .env.local; an absent or unsafe source is never treated as a
 # missing credential. The lookup also checks the worker process environment.
+# For presence classification, a whitespace-delimited # suffix is an inline
+# comment; an empty, "", or '' assignment before that suffix remains absent.
 #
 # Output contains only each requested key's present/absent result and a source
 # category. It never prints, stores, exports, or returns a configuration value.
@@ -132,6 +134,7 @@ local_env_file_has_key() {
     $0 ~ prefix {
       value=$0
       sub(prefix, "", value)
+      sub(/[[:space:]]+#.*$/, "", value)
       sub(/^[[:space:]]+/, "", value)
       sub(/[[:space:]]+$/, "", value)
       if (value == "" || value ~ /^""[[:space:]]*$/ || value ~ /^\047\047[[:space:]]*$/) found=0
