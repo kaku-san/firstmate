@@ -30,6 +30,7 @@ for tool in herdr jq pi python3; do
 done
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
+AMBIGUOUS_ACK=${FM_AFK_PI_HERDR_AMBIGUOUS_ACK:-0}
 SESSION=$("$LAB_HELPER" name fm-afk-pi-return-e2e)
 TMP_ROOT=$(fm_test_tmproot fm-afk-pi-return-e2e)
 HOME_DIR="$TMP_ROOT/home"
@@ -39,6 +40,7 @@ PI_DIR="$TMP_ROOT/pi-agent"
 FAKEBIN="$TMP_ROOT/fakebin"
 CAPTURE="$TMP_ROOT/pi-prompts.jsonl"
 NOTIFY_LOG="$TMP_ROOT/wedge-notify.log"
+TYPED_LOG="$TMP_ROOT/typed-escalations.log"
 ORIGINAL_PATH=$PATH
 PRIMARY_PANE=
 CHILD_PANE=
@@ -92,6 +94,7 @@ set -euo pipefail
 helper='$LAB_HELPER'
 session='$SESSION'
 real_path='$ORIGINAL_PATH'
+typed_log='$TYPED_LOG'
 args=("\$@")
 n=\${#args[@]}
 if [ "\$n" -ge 2 ] && [ "\${args[\$((n-2))]}" = --session ]; then
@@ -99,6 +102,14 @@ if [ "\$n" -ge 2 ] && [ "\${args[\$((n-2))]}" = --session ]; then
   args=("\${args[@]:0:\$((n-2))}")
 else
   [ "\${HERDR_SESSION:-}" = "\$session" ] || { echo 'wrapper requires isolated session' >&2; exit 98; }
+fi
+if [ "\${args[0]:-}" = pane ] && [ "\${args[1]:-}" = send-text ] && printf '%s' "\${args[3]:-}" | grep -Fq 'Supervisor escalate'; then
+  printf '%s\n' "\${args[3]}" >> "\$typed_log"
+fi
+if [ '$AMBIGUOUS_ACK' = 1 ] && [ "\${args[0]:-}" = agent ] && [ "\${args[1]:-}" = get ]; then
+  response=\$(PATH="\$real_path" "\$helper" run "\$session" "\${args[@]}") || exit \$?
+  printf '%s' "\$response" | jq '.result.agent.agent_status = "idle"'
+  exit 0
 fi
 PATH="\$real_path" exec "\$helper" run "\$session" "\${args[@]}"
 EOF
@@ -123,6 +134,7 @@ export FM_HEARTBEAT=999999
 export FM_CHECK_INTERVAL=999999
 export FM_MAX_DEFER_SECS=3
 export FM_STALE_ESCALATE_SECS=999999
+export FM_PI_AMBIGUOUS_ACK='$AMBIGUOUS_ACK'
 export FM_WEDGE_ALARM_EXEC='$TMP_ROOT/wedge-recorder'
 exec '$ROOT/bin/fm-afk-start.sh'
 EOF
@@ -196,6 +208,24 @@ PATH="$FAKEBIN:$ORIGINAL_PATH" HERDR_SESSION="$SESSION" FM_HOME="$HOME_DIR" FM_S
 DAEMON_STARTED=1
 for _ in $(seq 1 100); do [ -s "$STATE/.supervise-daemon.pid" ] && break; sleep 0.1; done
 [ -s "$STATE/.supervise-daemon.pid" ] || fail "away daemon did not start"
+
+if [ "$AMBIGUOUS_ACK" = 1 ]; then
+  # The real Pi receives and aborts the prompt, while the guarded Herdr shim
+  # reports an idle state for every agent.get acknowledgement read.
+  # This exercises the harness-dependent ambiguous-ack path without sending
+  # any test text to the captain's pane or contacting a provider.
+  CHILD_CMD=$(printf "printf 'needs-decision [key=ambiguous-live]: choose the synthetic path\\n' >> %q; exec sleep 120" "$STATE/repair-task.status")
+  "$LAB_HELPER" run "$SESSION" pane run "$CHILD_PANE" "$CHILD_CMD" >/dev/null
+  for _ in $(seq 1 100); do [ -s "$TYPED_LOG" ] && break; sleep 0.1; done
+  [ -s "$TYPED_LOG" ] || fail "real Pi/Herdr did not type the ambiguous-ack escalation: $(cat "$STATE/.supervise-daemon.log" 2>/dev/null; cat "$STATE/daemon.err" 2>/dev/null)"
+  sleep 5
+  typed_count=$(wc -l < "$TYPED_LOG" | tr -d ' ')
+  [ "$typed_count" -eq 1 ] || fail "ambiguous Herdr acknowledgement typed the escalation body $typed_count times"
+  [ -s "$STATE/.subsuper-escalation-offered" ] || fail "ambiguous live verification lost the offered identity"
+  [ -s "$STATE/.subsuper-escalations" ] || fail "ambiguous live verification lost the recoverable escalation"
+  pass "real Pi/Herdr typed an ambiguously acknowledged escalation once and retained one recoverable offer"
+  exit 0
+fi
 
 # Pending input is never an injection target. Leave a real draft in Pi before
 # the live child emits blocked:, then wait through max-defer.

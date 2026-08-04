@@ -65,6 +65,7 @@ test_return_gate_orders_catchup_before_bearings() {
   seed_live_blocker "$dir" herdr synthetic-dependency
   date +%s > "$dir/home/state/.afk"
   printf 'repair-task.status: blocked synthetic dependency\n' > "$dir/home/state/.subsuper-escalations"
+  cp "$dir/home/state/.subsuper-escalations" "$dir/home/state/.subsuper-escalation-offered"
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
   {
     printf '1784074271\t2\tsignal\trepair-task.status\tsignal: synthetic status\n'
@@ -84,6 +85,7 @@ test_return_gate_orders_catchup_before_bearings() {
     || fail "the separate drain annotation was not retained as away-return evidence"
   grep -F $'evidence\twedge\tfm away-mode inject WEDGED: 4555s undelivered' "$gate" >/dev/null || fail "wedge evidence was not retained in the durable gate"
   grep -F $'evidence\tescalation\trepair-task.status: blocked synthetic dependency' "$gate" >/dev/null || fail "buffered escalation evidence was not retained in the durable gate"
+  grep -F $'evidence\toffered\trepair-task.status: blocked synthetic dependency' "$gate" >/dev/null || fail "offered escalation identity was not retained in the durable gate"
   [ "$(wc -l < "$dir/home/stop.log" | tr -d ' ')" -eq 1 ] || fail "return begin did not stop away mode exactly once"
 
   # The exact incident regression: Bearings is an ordinary request and must
@@ -113,6 +115,7 @@ test_return_gate_orders_catchup_before_bearings() {
   assert_contains "$out" 'catch-up clear' "successful check did not announce that ordinary work may proceed"
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
   [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
+  [ ! -e "$dir/home/state/.subsuper-escalation-offered" ] || fail "successful check left the ambiguous offered identity behind"
   [ ! -e "$dir/home/state/.subsuper-inject-wedged" ] || fail "successful check left the wedge marker behind"
 
   out=$(run_return "$dir" check) || fail "an already-clear repeated check should be idempotent: $out"

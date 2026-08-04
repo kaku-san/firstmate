@@ -630,6 +630,66 @@ test_escalate_batch_age_uses_first_append() {
   pass "batch flush measures max-delay from the first append, not the last"
 }
 
+test_ambiguous_offer_is_not_retyped_and_reconciles() {
+  local dir state count
+  dir=$(make_supercase ambiguous-offer)
+  state="$dir/state"
+  count="$dir/body-count"
+  : > "$count"
+  afk_enter "$state"
+  escalate_add "$state" "research: needs-decision: choose A"
+  (
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p2
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() {
+      [ -e "$dir/.typed" ] && printf 'pending' || printf 'empty'
+    }
+    fm_backend_busy_state() { printf '%s' "${FM_TEST_NATIVE:-unknown}"; }
+    fm_backend_send_text_submit() {
+      touch "$dir/.typed"
+      printf '%s\n' "$3" >> "$count"
+      printf 'pending'
+    }
+    if escalate_flush "$state"; then
+      fail "ambiguous submit unexpectedly reported success"
+    fi
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || fail "ambiguous submit did not type exactly once"
+    [ -s "$state/.subsuper-escalation-offered" ] || fail "ambiguous submit lost its offered identity"
+    if escalate_flush "$state"; then
+      fail "ambiguous offer was re-flushed instead of awaiting reconciliation"
+    fi
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || fail "ambiguous offer retyped the body on the next housekeeping flush"
+    FM_TEST_NATIVE=busy escalate_flush "$state" || fail "authoritative Herdr turn did not retire the offer"
+    [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || fail "reconciliation typed the body a second time"
+    [ ! -e "$state/.subsuper-escalation-offered" ] || fail "retired offer marker remained"
+    [ ! -s "$state/.subsuper-escalations" ] || fail "retired offer left its exact buffered lines"
+  ) || fail "ambiguous offer reconciliation failed"
+  pass "ambiguous submit is typed once, remains recoverable, and retires on an authoritative turn"
+}
+
+test_genuinely_pending_composer_never_creates_offer() {
+  local dir state count
+  dir=$(make_supercase pending-offer)
+  state="$dir/state"
+  count="$dir/body-count"
+  : > "$count"
+  afk_enter "$state"
+  escalate_add "$state" "research: needs-decision: choose B"
+  (
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p2
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'pending'; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$count"; printf 'empty'; }
+    escalate_flush "$state" && fail "genuinely pending composer was treated as injectable"
+    [ ! -s "$count" ] || fail "pending composer caused a body send"
+    [ ! -e "$state/.subsuper-escalation-offered" ] || fail "pending composer created a false offered identity"
+    [ -s "$state/.subsuper-escalations" ] || fail "pending composer lost the recoverable escalation"
+  ) || fail "genuinely pending composer safety failed"
+  pass "genuinely pending input remains buffered without typing or offering"
+}
+
 test_heartbeat_scan_dedup() {
   local dir state
   dir=$(make_supercase scan-dedup)
@@ -1857,6 +1917,8 @@ test_housekeeping_herdr_resumed_stale_cleared
 test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
+test_ambiguous_offer_is_not_retyped_and_reconciles
+test_genuinely_pending_composer_never_creates_offer
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
 test_inject_skip_forces_self

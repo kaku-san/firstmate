@@ -136,8 +136,11 @@
 #                                   (default 0.5)
 #          FM_LOG_MAX_BYTES / FM_LOG_KEEP_LINES / FM_CRASH_*  log + crash guards
 #          FM_STATE_OVERRIDE        alternate state dir (testing)
-#          Logs each wake to state/.supervise-daemon.log (size-capped). Single
-#          instance via portable lock on state/.supervise-daemon.lock. Trapped
+#          Logs each wake to state/.supervise-daemon.log (size-capped). An
+#          ambiguous typed offer is recorded in
+#          state/.subsuper-escalation-offered until an authoritative postcondition
+#          retires its exact buffered lines. Single instance via portable lock on
+#          state/.supervise-daemon.lock. Trapped
 #          SIGTERM/SIGINT shut down within ~1s, flush escalations, release the
 #          lock. A crashing fm-watch.sh is logged and restarted, never killing
 #          the daemon; a tight crash-restart spin is detected and backed off.
@@ -428,6 +431,9 @@ classify_unknown() {  # <reason>
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
 # Buffer:   state/.subsuper-escalations    one distilled line per escalation.
+# Offer:    state/.subsuper-escalation-offered exact buffered lines already typed
+#           into the supervisor composer; it prevents automatic body retyping
+#           after an ambiguous submit acknowledgement.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
 
@@ -637,12 +643,73 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+escalation_offer_active() {  # <state>
+  [ -s "$1/.subsuper-escalation-offered" ]
+}
+
+# Copy the exact current buffer before typing it. This is the durable identity of
+# the logical offer, not a second delivery queue: later escalations append after
+# it and remain recoverable without changing the already-offered body.
+escalation_offer_begin() {  # <state>
+  local state=$1 buf="$1/.subsuper-escalations" offer="$1/.subsuper-escalation-offered" tmp
+  [ -s "$buf" ] || return 1
+  [ -e "$offer" ] && return 0
+  tmp=$(mktemp "$state/.subsuper-escalation-offered.pending.XXXXXX") || return 1
+  cat "$buf" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$offer"
+}
+
+# Retire only the exact offered prefix. Newer escalations appended while the
+# offer was ambiguous stay buffered, so a confirmed turn cannot lose them.
+escalation_offer_retire() {  # <state>
+  local state=$1 buf="$1/.subsuper-escalations" offer="$1/.subsuper-escalation-offered" lines tmp
+  [ -s "$offer" ] || { rm -f "$offer"; return 0; }
+  [ -s "$buf" ] || { rm -f "$offer"; return 0; }
+  lines=$(wc -l < "$offer" 2>/dev/null || echo 0)
+  [ "$lines" -gt 0 ] || { rm -f "$offer"; return 0; }
+  head -n "$lines" "$buf" 2>/dev/null | cmp -s - "$offer" || return 1
+  tmp=$(mktemp "$state/.subsuper-escalations.pending.XXXXXX") || return 1
+  tail -n +$((lines + 1)) "$buf" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$buf"
+  rm -f "$offer"
+  [ -s "$buf" ] || rm -f "${buf}.since"
+}
+
+# Reconcile an ambiguous offer from a read-only authoritative postcondition.
+# No automatic body resend is permitted once the offer exists. A real Herdr
+# turn, or an empty composer after the offer, retires only that exact prefix.
+escalation_offer_reconcile() {  # <state>
+  local state=$1 offer="$1/.subsuper-escalation-offered" buf="$1/.subsuper-escalations"
+  local target backend native composer
+  escalation_offer_active "$state" || return 0
+  [ -s "$buf" ] || { rm -f "$offer"; return 0; }
+  target="${FM_SUPERVISOR_TARGET:-$FM_SUPERVISOR_TARGET_DEFAULT}"
+  backend="${FM_SUPERVISOR_BACKEND:-tmux}"
+  fm_backend_target_exists "$backend" "$target" || return 1
+  native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+  if [ "$native" = busy ] || { [ "$backend" = tmux ] && pane_is_busy "$target" "$backend"; }; then
+    log "inject reconciled: authoritative turn started for offered escalation"
+    escalation_offer_retire "$state"
+    return $?
+  fi
+  composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null || true)
+  if [ "$composer" = empty ]; then
+    log "inject reconciled: authoritative empty composer retired offered escalation"
+    escalation_offer_retire "$state"
+    return $?
+  fi
+  return 1
+}
+
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
 escalate_flush() {  # <state>
   local state=$1 buf item n msg
   buf="$state/.subsuper-escalations"
+  if escalation_offer_active "$state"; then
+    escalation_offer_reconcile "$state" || return 1
+  fi
   [ -s "$buf" ] || return 0
   n=$(wc -l < "$buf" 2>/dev/null || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
@@ -650,7 +717,16 @@ escalate_flush() {  # <state>
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
-  if inject_msg "$msg" "$state"; then : > "$buf"; rm -f "${buf}.since" "$state/.subsuper-inject-wedged"; return 0; fi
+  if inject_msg "$msg" "$state"; then
+    escalation_offer_retire "$state" || return 1
+    : > "$buf"
+    rm -f "${buf}.since" "$state/.subsuper-inject-wedged"
+    return 0
+  fi
+  # The backend's send-failed verdict means literal typing did not happen, so
+  # that known transport failure may be retried. Every ambiguous verdict keeps
+  # the offer identity and forbids a second body send.
+  [ "${FM_INJECT_VERDICT:-}" = send-failed ] && rm -f "$state/.subsuper-escalation-offered"
   return 1
 }
 
@@ -1113,6 +1189,7 @@ window_for_task() {  # <task-key> [state]
 #     would merge with the human's text.
 inject_msg() {  # <message> [state]
   local msg=$1 state target backend retries sleep_s verdict composer encoded
+  FM_INJECT_VERDICT=
   state="${2:-$(_state_root)}"
   # (1) Presence-gate: inject ONLY when afk is active. When afk is off, the
   # daemon self-handles and stays quiet; firstmate drives the normal always-on
@@ -1159,9 +1236,19 @@ inject_msg() {  # <message> [state]
   # Dispatches through fm_backend_send_text_submit (bin/fm-backend.sh): for
   # backend=tmux this calls fm_backend_tmux_send_text_submit, a verbatim
   # re-export of fm_tmux_submit_core - byte-identical to calling it directly.
+  # Persist the exact offer immediately before literal typing. A crash after
+  # this point is conservatively treated as ambiguous, so recovery never
+  # retypes the body; Enter retries remain inside the backend primitive.
+  if [ -s "$state/.subsuper-escalations" ]; then
+    escalation_offer_begin "$state" || {
+      log "inject deferred: could not persist offered escalation identity"
+      return 1
+    }
+  fi
   retries=${FM_INJECT_CONFIRM_RETRIES:-$INJECT_CONFIRM_RETRIES_DEFAULT}
   sleep_s=${FM_INJECT_CONFIRM_SLEEP:-$INJECT_CONFIRM_SLEEP_DEFAULT}
   verdict=$(fm_backend_send_text_submit "$backend" "$target" "$msg" "$retries" "$sleep_s" "$sleep_s")
+  FM_INJECT_VERDICT=$verdict
   if [ "$verdict" = empty ]; then
     return 0  # Backend confirmed the submit.
   fi
