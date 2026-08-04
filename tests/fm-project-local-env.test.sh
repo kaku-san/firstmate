@@ -166,12 +166,12 @@ SH
 }
 
 test_local_source_swap_stops_safely() {
-  local case_dir primary isolated outside done fakebin out status
+  local case_dir primary isolated outside swap_done fakebin out status
   case_dir="$TMP_ROOT/local-source-swap"
   primary="$case_dir/primary"
   isolated="$case_dir/isolated"
   outside="$case_dir/outside.env"
-  done="$case_dir/swap.done"
+  swap_done="$case_dir/swap.done"
   fm_git_init_commit "$primary"
   cp -R "$primary" "$isolated"
   printf '%s\n' 'PARALLEL_API_KEY=dummy-original-value' > "$primary/.env.local"
@@ -180,7 +180,7 @@ test_local_source_swap_stops_safely() {
   write_race_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$primary/.env.local" FM_TEST_SWAP_TARGET="$outside" \
-    FM_TEST_SWAP_DONE="$done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
     FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
     FM_PROJECT_LOCAL_ENV_FILE=.env.local \
     "$CHECK" check PARALLEL_API_KEY 2>&1)
@@ -432,14 +432,14 @@ test_spawn_rejects_hardlinked_legacy_brief() {
 }
 
 test_spawn_rejects_swapped_legacy_brief() {
-  local case_dir home primary isolated outside target done log id fakebin out status
+  local case_dir home primary isolated outside target swap_done log id fakebin out status
   case_dir="$TMP_ROOT/swapped-legacy-brief"
   home="$case_dir/home"
   primary="$case_dir/primary"
   isolated="$case_dir/isolated"
   outside="$case_dir/outside"
   target="$outside/brief.md"
-  done="$case_dir/swap.done"
+  swap_done="$case_dir/swap.done"
   log="$case_dir/tmux.log"
   id=local-env-swap-z5
   mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside"
@@ -450,7 +450,7 @@ test_spawn_rejects_swapped_legacy_brief() {
   write_race_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$home/data/$id/brief.md" FM_TEST_SWAP_TARGET="$target" \
-    FM_TEST_SWAP_DONE="$done" FM_REAL_PERL="$REAL_PERL" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
