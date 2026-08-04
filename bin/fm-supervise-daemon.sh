@@ -970,9 +970,11 @@ wedge_alarm_notify() {  # <summary> <marker>
   return 0
 }
 
-# Raise a loud, rate-limited alarm when escalations cannot be delivered after
+# Raise a loud, bounded alarm when escalations cannot be delivered after
 # max-defer (the supervisor pane is genuinely busy/wedged, or the submit's Enter
-# is swallowed). The daemon must NEVER silently wedge: this logs
+# is swallowed). Pre-send active alerts are rate-limited by the max-defer window;
+# a reserved or offered identity can emit one active alert across recovery.
+# The daemon must NEVER silently wedge: this logs
 # an ERROR, drops a durable marker firstmate/recovery can surface, flashes
 # the tmux supervisor client's status line when applicable, and attempts a
 # configurable backend-independent active alert (wedge_alarm_notify). Nothing
@@ -983,7 +985,8 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   marker="$state/.subsuper-inject-wedged"
   identity="$marker.identity"
   max_defer="${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}"
-  # Re-alarm at most once per max-defer window so a long wedge does not spam.
+  # Reconsider the alarm at most once per max-defer window.
+  # The durable identity check below further suppresses repeated active signals.
   if [ "$(_file_age "$marker")" -lt "$max_defer" ]; then
     return 0
   fi
@@ -1086,9 +1089,10 @@ housekeeping() {  # <state>
   max_defer=${FM_MAX_DEFER_SECS:-$MAX_DEFER_SECS_DEFAULT}
   if afk_active "$state" && [ "$max_defer" -gt 0 ] && [ -s "$state/.subsuper-escalations" ]; then
     oldest=$(_oldest_line_age "$state/.subsuper-escalations")
-    # Throttle the alarm to once per max-defer window (the wedge marker doubles
-    # as the throttle). A successful flush clears the buffer; a failed one alarms
-    # and waits.
+    # Reconsider the alarm once per max-defer window, using the wedge marker as
+    # the timer.
+    # Identity-bound active-signal suppression remains inside inject_wedge_alarm.
+    # A successful flush clears the buffer; a failed one records the wedge and waits.
     if [ "$oldest" -ge "$max_defer" ] \
        && [ "$(_file_age "$state/.subsuper-inject-wedged")" -ge "$max_defer" ]; then
       if escalate_flush "$state"; then

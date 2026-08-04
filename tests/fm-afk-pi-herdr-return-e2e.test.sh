@@ -68,16 +68,61 @@ mkdir -p "$HOME_DIR"/{state,data,config,projects} "$PROJECT" "$PI_DIR" "$FAKEBIN
 printf '# Synthetic isolated Firstmate primary\n' > "$PROJECT/AGENTS.md"
 
 # A task-local extension grants session-only trust, captures exact prompt bytes,
-# and aborts before provider work. No production supervision extension is loaded
-# in this synthetic primary, so nothing except the test can mutate fleet state.
-# Herdr still observes Pi's real idle->working transition, so production submit
-# verification is exercised without making a model request.
+# and registers a deterministic in-process provider with no external request.
+# No production supervision extension is loaded in this synthetic primary, so
+# nothing except the test can mutate fleet state.
+# Herdr still observes Pi's real idle-to-working transition, so production submit
+# verification is exercised without credentials or an external model request.
 CAPTURE_EXT="$TMP_ROOT/capture-extension.ts"
 cat > "$CAPTURE_EXT" <<'EOF'
+import {
+  type AssistantMessage,
+  createAssistantMessageEventStream,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "node:fs";
 const capturePath = process.env.FM_PI_CAPTURE_PATH!;
 export default function (pi: ExtensionAPI) {
+  pi.registerProvider("afk-e2e", {
+    baseUrl: "http://127.0.0.1/unused",
+    apiKey: "test-only",
+    api: "afk-e2e-api",
+    models: [{
+      id: "capture-only",
+      name: "Away-mode capture-only regression",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 4096,
+      maxTokens: 128,
+    }],
+    streamSimple(model) {
+      const stream = createAssistantMessageEventStream();
+      const output: AssistantMessage = {
+        role: "assistant",
+        content: [],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: output });
+        stream.push({ type: "done", reason: "stop", message: output });
+        stream.end();
+      });
+      return stream;
+    },
+  });
   pi.on("project_trust", () => ({ trusted: "yes", remember: false }));
   pi.on("before_agent_start", (event, ctx) => {
     appendFileSync(capturePath, `${JSON.stringify({ prompt: event.prompt, hex: Buffer.from(event.prompt, "utf8").toString("hex") })}\n`);
@@ -105,6 +150,9 @@ else
 fi
 if [ "\${args[0]:-}" = pane ] && [ "\${args[1]:-}" = send-text ] && printf '%s' "\${args[3]:-}" | grep -Fq 'Supervisor escalate'; then
   printf '%s\n' "\${args[3]}" >> "\$typed_log"
+fi
+if [ '$AMBIGUOUS_ACK' = 1 ] && [ -s "\$typed_log" ] && [ "\${args[0]:-}" = pane ] && [ "\${args[1]:-}" = read ]; then
+  exit 96
 fi
 if [ '$AMBIGUOUS_ACK' = 1 ] && [ "\${args[0]:-}" = agent ] && [ "\${args[1]:-}" = get ]; then
   response=\$(PATH="\$real_path" "\$helper" run "\$session" "\${args[@]}") || exit \$?
@@ -145,7 +193,7 @@ WORKSPACE=$(printf '%s' "$PRIMARY_OUT" | jq -r '.result.workspace.workspace_id')
 PRIMARY_PANE=$(printf '%s' "$PRIMARY_OUT" | jq -r '.result.root_pane.pane_id')
 PRIMARY_TARGET="$SESSION:$PRIMARY_PANE"
 EXT="$CAPTURE_EXT"
-PI_CMD=$(printf 'exec env PI_CODING_AGENT_DIR=%q FM_HOME=%q FM_PI_CAPTURE_PATH=%q pi -e %q --no-context-files --no-session' "$PI_DIR" "$HOME_DIR" "$CAPTURE" "$EXT")
+PI_CMD=$(printf 'exec env PI_CODING_AGENT_DIR=%q FM_HOME=%q FM_PI_CAPTURE_PATH=%q pi -e %q --model afk-e2e/capture-only --no-context-files --no-session' "$PI_DIR" "$HOME_DIR" "$CAPTURE" "$EXT")
 "$LAB_HELPER" run "$SESSION" pane run "$PRIMARY_PANE" "$PI_CMD" >/dev/null
 
 wait_for_idle() {
@@ -211,14 +259,19 @@ for _ in $(seq 1 100); do [ -s "$STATE/.supervise-daemon.pid" ] && break; sleep 
 
 if [ "$AMBIGUOUS_ACK" = 1 ]; then
   # The real Pi receives and aborts the prompt, while the guarded Herdr shim
-  # reports an idle state for every agent.get acknowledgement read.
+  # reports idle for every acknowledgement read and makes the later composer
+  # postcondition unreadable after the literal send.
   # This exercises the harness-dependent ambiguous-ack path without sending
-  # any test text to the captain's pane or contacting a provider.
+  # any test text to the captain's pane or contacting an external provider.
   CHILD_CMD=$(printf "printf 'needs-decision [key=ambiguous-live]: choose the synthetic path\\n' >> %q; exec sleep 120" "$STATE/repair-task.status")
   "$LAB_HELPER" run "$SESSION" pane run "$CHILD_PANE" "$CHILD_CMD" >/dev/null
   for _ in $(seq 1 100); do [ -s "$TYPED_LOG" ] && break; sleep 0.1; done
   [ -s "$TYPED_LOG" ] || fail "real Pi/Herdr did not type the ambiguous-ack escalation: $(cat "$STATE/.supervise-daemon.log" 2>/dev/null; cat "$STATE/daemon.err" 2>/dev/null)"
-  sleep 5
+  wait_for_prompt 'any(.[]; (.prompt | startswith("\u2063")) and (.prompt | contains("Supervisor escalate")))' \
+    || fail "real Pi did not receive the ambiguously acknowledged escalation: pane=$("$LAB_HELPER" run "$SESSION" pane read "$PRIMARY_PANE" --source recent --lines 200 2>/dev/null); daemon=$(cat "$STATE/.supervise-daemon.log" 2>/dev/null)"
+  for _ in $(seq 1 200); do [ -s "$STATE/.subsuper-escalation-offered" ] && break; sleep 0.1; done
+  [ -s "$STATE/.subsuper-escalation-offered" ] || fail "ambiguous live verification did not promote the in-flight reservation: files=$(find "$STATE" -maxdepth 1 -type f -print | sort | xargs -n1 basename | tr '\n' ' '); daemon=$(cat "$STATE/.supervise-daemon.log" 2>/dev/null); capture=$(cat "$CAPTURE" 2>/dev/null)"
+  sleep 4
   typed_count=$(wc -l < "$TYPED_LOG" | tr -d ' ')
   [ "$typed_count" -eq 1 ] || fail "ambiguous Herdr acknowledgement typed the escalation body $typed_count times"
   [ -s "$STATE/.subsuper-escalation-offered" ] || fail "ambiguous live verification lost the offered identity"
@@ -257,16 +310,16 @@ for _ in $(seq 1 80); do
   sleep 0.1
 done
 [ "$composer" = empty ] || fail "genuinely idle Pi separator composer did not classify empty (got $composer)"
-wait_for_prompt 'any(.[]; .prompt | startswith("\u2063Supervisor escalate"))' \
+wait_for_prompt 'any(.[]; (.prompt | startswith("\u2063")) and (.prompt | contains("Supervisor escalate")))' \
   || fail "real Pi did not receive the buffered escalation after becoming safely idle"
-INJECT_HEX=$(jq -r 'select(.prompt | startswith("\u2063Supervisor escalate")) | .hex' "$CAPTURE" | tail -1)
+INJECT_HEX=$(jq -r 'select((.prompt | startswith("\u2063")) and (.prompt | contains("Supervisor escalate"))) | .hex' "$CAPTURE" | tail -1)
 case "$INJECT_HEX" in e281a3*) ;; *) fail "real Pi escalation lost the terminal-safe marker: $INJECT_HEX" ;; esac
 for _ in $(seq 1 80); do [ ! -s "$STATE/.subsuper-escalations" ] && break; sleep 0.1; done
 [ ! -s "$STATE/.subsuper-escalations" ] || fail "confirmed real Pi delivery did not clear the escalation buffer"
 [ ! -e "$STATE/.subsuper-inject-wedged" ] || fail "confirmed real Pi delivery did not clear the old wedge marker"
 sleep 4
 [ "$(wc -l < "$NOTIFY_LOG" | tr -d ' ')" -eq 1 ] || fail "successful delivery emitted a duplicate wedge alert"
-INJECT_PROMPT=$(jq -r 'select(.prompt | startswith("\u2063Supervisor escalate")) | .prompt' "$CAPTURE" | tail -1)
+INJECT_PROMPT=$(jq -r 'select((.prompt | startswith("\u2063")) and (.prompt | contains("Supervisor escalate"))) | .prompt' "$CAPTURE" | tail -1)
 message_is_injection "$INJECT_PROMPT" || fail "terminal-delivered Pi escalation was not recognized as an internal marker"
 assert_blocker_open 'after successful marked injection'
 pass "real idle Pi/Herdr accepts one marked escalation promptly, verifies submit, clears wedge state, and emits no duplicate alert"

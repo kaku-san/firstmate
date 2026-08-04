@@ -438,7 +438,7 @@ Observed output:
 ok - real Pi/Herdr typed an ambiguously acknowledged escalation once and retained one recoverable offer
 ```
 
-The guard uses a real isolated Pi primary and Herdr transport, forces only the acknowledgement read to remain idle, records the real literal send, and makes no provider request.
+The guard uses a real isolated Pi primary, Herdr transport, and an in-process deterministic provider with no external request, holds the acknowledgement read at idle, makes the post-send composer read unavailable, and records the real literal send.
 The portable regressions cover pre-send crash reservation, restart and rollback recovery, authoritative retirement with later buffered lines, exact-identity bounded alerting, pending-input refusal, return catch-up, and no body retyping.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
 

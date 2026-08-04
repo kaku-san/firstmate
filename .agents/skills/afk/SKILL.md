@@ -108,10 +108,11 @@ In afk mode the composer guard is belt-and-suspenders (no human is typing), but 
 If anything stays buffered past `FM_MAX_DEFER_SECS` (default 300), the daemon
 attempts one normal flush, which still requires an idle pane and an affirmatively empty composer.
 The alarm is defense in depth rather than a substitute for keeping every genuinely idle supported composer injectable.
-If that submit cannot be confirmed, it raises a loud, rate-limited wedge alarm:
+If that submit cannot be confirmed, it raises a loud, bounded wedge alarm:
 an ERROR in the daemon log, a durable
 `state/.subsuper-inject-wedged` marker (surface it on the "while you were out"
 catch-up if present), a tmux status-line flash when applicable, and a configurable backend-independent active alert.
+Before the send has a durable identity, active signals are rate-limited by the max-defer window; an exact reserved or offered identity can emit them only once, including across daemon recovery.
 `docs/wedge-alarm.md` owns the alert channel setup, and `docs/verification/supervision.md` "Wedge-alarm channels" owns active evidence.
 So a guard false-positive becomes a visible stall, never an unbounded silent no-op.
 
@@ -122,15 +123,10 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 **verified** through the selected backend's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
-Immediately before the send attempt, the daemon copies the exact buffered prefix
-to `state/.subsuper-escalation-reserved` and never automatically types that body
-again if the process stops before the attempt returns.
-After the send attempt returns, it promotes the reservation to
-`state/.subsuper-escalation-offered`.
-Only that observed-attempt phase may retire on a later authoritative turn-start
-or empty-composer observation.
-Both phases keep the buffered lines durable for return catch-up and bind at most
-one active wedge alert to the exact protected prefix.
+Immediately before the send attempt, the daemon durably reserves the exact buffered prefix and never automatically types that body again if the process stops before the attempt returns.
+After the send attempt returns, it promotes the reservation to an observed offer.
+Only that observed-attempt phase may retire on a later authoritative turn-start or empty-composer observation.
+Both phases keep the buffered lines durable for return catch-up and bind at most one active wedge alert to the exact protected prefix.
 For tmux that confirmation is a cleared composer, using the same corrected,
 border-aware detector as the composer guard.
 For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started; the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or unreadable baselines.
@@ -200,28 +196,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
   They read the composer shape from a separately ANSI-stripped plain row because a dark TRUECOLOR border can be stripped with ghost content.
   A ghost-only or idle bordered composer such as claude's `│ > ... │` therefore reads empty without allowing an unbordered shell prompt to do the same.
   `FM_COMPOSER_IDLE_RE` still overrides tmux empty-composer matching after shared ghost and border stripping, and `FM_BUSY_REGEX` overrides the rendered delivery guards plus Grok's isolated task-state fallback.
-- **Max-defer escape** - the daemon must never silently wedge. If anything stays
-  buffered past `FM_MAX_DEFER_SECS` (default 300s), the daemon attempts one
-  normal flush, which still requires an idle pane and an affirmatively empty composer. If that
-  cannot confirm a submit, it raises a loud, rate-limited wedge alarm: ERROR log,
-  durable `state/.subsuper-inject-wedged` marker, a tmux status-line flash when
-  applicable, and a backend-independent active alert. A
-  composer false-positive surfaces as a visible stall, never an unbounded silent
-  no-op.
-- **Verified type-once submit model** - the digest is typed once (`send-keys -l`
-  on tmux, `pane send-text` on herdr), then submitted with Enter and verified.
-  Enter is retried, Enter only and never a retype, until the backend submit
-  primitive reports `empty` as its caller-facing success verdict.
-  Before the send attempt starts, its exact buffered prefix becomes a durable
-  reservation that blocks automatic body retyping across a process stop.
-  A returned attempt promotes that reservation to an offer, and only this
-  observed-attempt phase permits read-only authoritative retirement.
-  Return catch-up surfaces either phase, and one unresolved identity emits at
-  most one active wedge alert.
-  For tmux that verdict means the shared-ghost-aware and border-aware composer
-  cleared.
-  For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and fallback paths.
-  This lets ghost-only or bordered-empty composers count as empty where a composer read is the active confirmation signal.
+- **Max-defer escape** - follow [Submit model](#submit-model), which owns the bounded delivery-stall behavior and points to the operator channel reference.
+- **Verified type-once submit model** - follow [Submit model](#submit-model), which owns body deduplication, Enter-only retries, authoritative retirement, recovery, and the identity-bound alert guarantee.
 - **Marker strip** - `strip_injection_marker` removes the current operational
   prefix or legacy bare marker before classification or relay, so the digest
   text firstmate sees is clean.
@@ -246,10 +222,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 
 ## Stale-artifact lifecycle
 
-Treat `state/.subsuper-escalations`, its `.since` sidecar,
-`state/.subsuper-escalation-reserved`, `state/.subsuper-escalation-offered`,
-`state/.subsuper-inject-wedged`, and its `.identity` sidecar as session-scoped
-delivery artifacts, not as the durable work record.
+Treat the escalation buffer, its delivery reservation or offer, and its wedge evidence as session-scoped delivery artifacts, not as the durable work record.
+The headers of `bin/fm-afk-start.sh`, `bin/fm-afk-launch.sh`, `bin/fm-afk-return.sh`, and `bin/fm-supervise-daemon.sh` own their exact paths and lifecycle mechanics.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
