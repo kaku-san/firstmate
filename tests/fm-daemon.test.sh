@@ -213,6 +213,25 @@ test_afk_result_dedupes_heartbeat_orderings() {
   pass "away result deduplication is stable across heartbeat and turn wake ordering"
 }
 
+test_afk_heartbeat_surfaces_reopened_status_event() {
+  local dir state status count
+  dir=$(make_supercase afk-result-reopened-status)
+  state="$dir/state"
+  status="$state/reopened-r1.status"
+  afk_enter "$state"
+  printf 'blocked [key=sample]: waiting\n' > "$status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  printf 'resolved [key=sample]: resumed\nblocked [key=sample]: waiting\n' >> "$status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "heartbeat suppressed a reopened status event with identical text ($count)"
+  pass "heartbeat surfaces reopened terminal events with identical status text"
+}
+
 test_afk_historical_check_is_bounded_and_deduped() {
   local dir state reason count
   dir=$(make_supercase afk-historical-check)
@@ -2043,6 +2062,7 @@ test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_afk_logical_result_path_growth_dedup
 test_afk_result_dedupes_heartbeat_orderings
+test_afk_heartbeat_surfaces_reopened_status_event
 test_afk_historical_check_is_bounded_and_deduped
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping

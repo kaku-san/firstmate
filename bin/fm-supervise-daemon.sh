@@ -399,10 +399,7 @@ away_signal_items() {  # <reason-paths> <state>
         [ -n "$last" ] || continue
         status_is_captain_relevant "$last" || continue
         task=$(basename "$f"); task=${task%.status}
-        turnf="$state/$task.turn-ended"
         identity=$(result_status_identity "$task" "$f" "$last")
-        [ "$(cat "$state/.subsuper-seen-status-$(_stale_key "$task")" 2>/dev/null || true)" = "$last" ] \
-          && [ ! -e "$turnf" ] && continue
         case " $emitted " in *" $identity "*) continue ;; esac
         emitted="$emitted $identity"
         result_identity_known "$state" "$task" "$identity" || printf '%s\t%s\n' "$identity" "$(basename "$f"): $last"
@@ -516,8 +513,8 @@ classify_unknown() {  # <reason>
 #           before a send attempt whose completion has not been observed.
 # Offer:    state/.subsuper-escalation-offered reserved prefix after the send
 #           attempt returned; it permits authoritative postcondition retirement.
-# Seen:     state/.subsuper-seen-status-<task>  last status line the scan
-#           escalated, so the catch-all does not re-fire the same terminal.
+# Seen:     state/.subsuper-seen-status-<task>  last status line surfaced for
+#           legacy signal and stale cross-path classification.
 # Logical result rows in the buffer use an internal identity<TAB>item form.
 # Confirmed sends and durable offers commit their result identities to
 # state/.subsuper-result-seen-<task>; uncommitted rows remain retryable.
@@ -610,18 +607,13 @@ sync_pause_markers_from_signal() {  # <state> <signal files>
   done
 }
 
-# Record the seen-status marker for a captain-relevant status line so the
-# heartbeat catch-all scan does not re-fire it. The single source of truth for
-# the .subsuper-seen-status-<task> dedup state: called from both the per-wake
-# escalate path and the catch-all scan.
+# Record the seen-status marker used by legacy signal and stale classification.
 mark_status_seen() {  # <state> <task> <last-line>
   local state=$1 task=$2 line=$3
   printf '%s' "$line" > "$state/.subsuper-seen-status-$(_stale_key "$task")"
 }
 
-# Mark every captain-relevant status line a per-wake classification escalated as
-# seen, so the catch-all scan does not re-escalate the same line within
-# HEARTBEAT_SCAN_SECS. Mirrors classify_signal/classify_stale's relevance test.
+# Mark every relevant status line surfaced by a per-wake classification.
 mark_escalated_seen() {  # <kind> <arg> <state>
   local kind=$1 arg=$2 state=$3 f last task
   case "$kind" in
@@ -1296,11 +1288,18 @@ housekeeping() {  # <state>
   #     scan_captain_relevant_statuses; the daemon layers its digest dedup on top.
   if [ "$(_file_age "$state/.subsuper-last-scan")" -ge "${FM_HEARTBEAT_SCAN_SECS:-$HEARTBEAT_SCAN_SECS_DEFAULT}" ]; then
     _now > "$state/.subsuper-last-scan"
-    local seen
+    local identity seen
     while IFS="$(printf '\t')" read -r f task last; do
       [ -n "$f" ] || continue
+      identity=$(result_status_identity "$task" "$f" "$last")
+      if result_identity_known "$state" "$task" "$identity"; then
+        mark_status_seen "$state" "$task" "$last"
+        continue
+      fi
       seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
-      [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ] && continue
+      if ! afk_active "$state" && [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ]; then
+        continue
+      fi
       escalate_signal_results "$state" "$f"
       mark_status_seen "$state" "$task" "$last"
     done < <(scan_captain_relevant_statuses "$state")
