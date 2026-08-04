@@ -1163,45 +1163,98 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-validate_legacy_brief_path() {
-  local task_dir task_dir_real brief_dir_real
+upgrade_legacy_brief() {
+  local task_dir task_dir_real brief_dir_real brief_name local_env_section status
   task_dir="$DATA/$ID"
   task_dir_real=$(CDPATH='' cd -P -- "$task_dir" 2>/dev/null && pwd -P) || {
     echo "error: task data directory cannot be resolved: $task_dir" >&2
-    return 1
-  }
-  [ ! -L "$BRIEF" ] && [ -f "$BRIEF" ] || {
-    echo "error: task brief must be a non-symlink regular file within resolved task data directory: $BRIEF" >&2
     return 1
   }
   brief_dir_real=$(CDPATH='' cd -P -- "$(dirname "$BRIEF")" 2>/dev/null && pwd -P) || {
     echo "error: task brief directory cannot be resolved: $(dirname "$BRIEF")" >&2
     return 1
   }
-  case "$brief_dir_real/" in
-    "$task_dir_real/"*) ;;
+  [ "$brief_dir_real" = "$task_dir_real" ] || {
+    echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
+    return 1
+  }
+  brief_name=$(basename "$BRIEF")
+  [ "$brief_name" = brief.md ] || {
+    echo "error: task brief name is invalid within resolved task data directory: $BRIEF" >&2
+    return 1
+  }
+  local_env_section=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section) || {
+    echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
+    return 1
+  }
+  if perl -MFcntl=:DEFAULT -MCwd=getcwd -MIO::Handle -e '
+    my ($directory, $name, $section) = @ARGV;
+    chdir($directory) or exit 3;
+    exit 3 unless getcwd() eq $directory;
+    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW) or exit 3;
+    my @source_stat = stat($source) or exit 3;
+    exit 3 unless -f _ && $source_stat[3] == 1;
+    my $marker = q{Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`};
+    my $found = 0;
+    while (defined(my $line = <$source>)) {
+      $found = 1 if index($line, $marker) >= 0;
+    }
+    exit 3 unless eof($source);
+    my @named_stat = lstat($name);
+    exit 4 unless @named_stat && $named_stat[0] == $source_stat[0]
+      && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1;
+    exit 0 if $found;
+    seek($source, 0, 0) or exit 5;
+    my ($temporary, $output);
+    END { unlink($temporary) if defined($temporary) }
+    for my $attempt (1 .. 100) {
+      $temporary = sprintf ".brief.md.fm-%d-%d-%d", $$, time, $attempt;
+      last if sysopen($output, $temporary,
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+      undef $output;
+    }
+    exit 5 unless $output;
+    while (1) {
+      my $read = read($source, my $buffer, 65536);
+      exit 5 unless defined $read;
+      last if $read == 0;
+      print {$output} $buffer or exit 5;
+    }
+    print {$output} "\n$section\n" or exit 5;
+    chmod($source_stat[2] & 07777, $output) or exit 5;
+    $output->sync or exit 5;
+    close($output) or exit 5;
+    @named_stat = lstat($name);
+    unless (@named_stat && $named_stat[0] == $source_stat[0]
+      && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1) {
+      unlink($temporary);
+      exit 4;
+    }
+    rename($temporary, $name) or do { unlink($temporary); exit 5 };
+    undef $temporary;
+  ' "$task_dir_real" "$brief_name" "$local_env_section"; then
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    3)
+      echo "error: task brief must be a non-symlink regular file with one link within resolved task data directory: $BRIEF" >&2
+      ;;
+    4)
+      echo "error: task brief changed during safe legacy upgrade: $BRIEF" >&2
+      ;;
     *)
-      echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
-      return 1
+      echo "error: could not atomically add the project-local configuration boundary to $BRIEF" >&2
       ;;
   esac
+  return 1
 }
 
 if [ "$KIND" != secondmate ]; then
-  validate_legacy_brief_path || exit 1
-fi
-[ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
-# shellcheck disable=SC2016 # The brief marker must contain the literal variable reference.
-if [ "$KIND" != secondmate ] \
-   && ! grep -Fq 'Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`' "$BRIEF"; then
-  LOCAL_ENV_SECTION=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section) || {
-    echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
-    exit 1
-  }
-  printf '\n%s\n' "$LOCAL_ENV_SECTION" >> "$BRIEF" || {
-    echo "error: could not add the project-local configuration boundary to $BRIEF" >&2
-    exit 1
-  }
+  upgrade_legacy_brief || exit 1
+else
+  [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode

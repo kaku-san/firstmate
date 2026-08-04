@@ -15,6 +15,7 @@ CHECK="$ROOT/bin/fm-project-local-env.sh"
 BRIEF="$ROOT/bin/fm-brief.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-project-local-env)
+REAL_PERL=$(command -v perl)
 
 write_dummy_env() {
   local project=$1
@@ -127,6 +128,73 @@ test_process_and_isolated_sources_are_presence_only() {
   assert_not_contains "$out" 'dummy-isolated-value' \
     "isolated local value leaked into the result"
   pass "process and isolated sources are checked without exposing values"
+}
+
+test_multiline_process_environment_does_not_spoof_presence() {
+  local case_dir primary isolated out status
+  case_dir="$TMP_ROOT/multiline-process-environment"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+  export UNRELATED_MULTILINE_VALUE=$'unrelated\nPARALLEL_API_KEY=dummy-decoy-value'
+
+  out=$(run_check "$primary" "$isolated" PARALLEL_API_KEY)
+  status=$?
+  unset UNRELATED_MULTILINE_VALUE
+  expect_code 1 "$status" "an unrelated multiline process value must not spoof key presence"
+  assert_contains "$out" 'PARALLEL_API_KEY: absent' \
+    "an unrelated multiline process value spoofed PARALLEL_API_KEY presence"
+  assert_not_contains "$out" 'dummy-decoy-value' \
+    "the unrelated multiline process value leaked into the result"
+  pass "process presence checks query only the requested variable"
+}
+
+write_race_perl() {
+  local fakebin=$1
+  cat > "$fakebin/perl" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
+  rm -f -- "$FM_TEST_SWAP_PATH"
+  ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
+  : > "$FM_TEST_SWAP_DONE"
+fi
+exec "$FM_REAL_PERL" "$@"
+SH
+  chmod +x "$fakebin/perl"
+}
+
+test_local_source_swap_stops_safely() {
+  local case_dir primary isolated outside done fakebin out status
+  case_dir="$TMP_ROOT/local-source-swap"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside.env"
+  done="$case_dir/swap.done"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-original-value' > "$primary/.env.local"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  write_race_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PATH="$primary/.env.local" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
+    FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
+    FM_PROJECT_LOCAL_ENV_FILE=.env.local \
+    "$CHECK" check PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a local source swapped to a symlink must stop safely"
+  assert_contains "$out" 'not a safe regular file or is unreadable' \
+    "the swapped local source refusal did not explain the safety boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: present' \
+    "a swapped local source produced a false presence result"
+  assert_not_contains "$out" 'dummy-' \
+    "a swapped local source exposed a value"
+  [ "$(cat "$outside")" = 'PARALLEL_API_KEY=dummy-outside-value' ] || \
+    fail "the swapped local source target was modified"
+  pass "local sources are opened once without following a replacement symlink"
 }
 
 test_unsafe_boundary_stops_safely() {
@@ -323,12 +391,80 @@ test_spawn_rejects_symlinked_legacy_brief() {
     --mode no-mistakes --yolo off 2>&1)
   status=$?
   expect_code 1 "$status" "spawn should refuse a symlinked legacy brief"
-  assert_contains "$out" 'non-symlink regular file within resolved task data directory' \
+  assert_contains "$out" 'non-symlink regular file' \
     "symlinked legacy brief refusal did not explain the safety boundary"
   [ "$(cat "$target")" = 'outside brief remains unchanged' ] || \
     fail "symlinked legacy brief target was modified"
   assert_absent "$log" "symlinked legacy brief reached endpoint creation"
   pass "legacy brief upgrade refuses symlink targets before mutation"
+}
+
+test_spawn_rejects_hardlinked_legacy_brief() {
+  local case_dir home primary isolated outside target log id fakebin out status
+  case_dir="$TMP_ROOT/hardlinked-legacy-brief"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  target="$outside/brief.md"
+  log="$case_dir/tmux.log"
+  id=local-env-hardlink-z4
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside"
+  fm_git_worktree "$primary" "$isolated" hardlinked-legacy-brief
+  printf '%s\n' 'outside brief remains unchanged' > "$target"
+  ln "$target" "$home/data/$id/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a hardlinked legacy brief"
+  assert_contains "$out" 'regular file with one link' \
+    "hardlinked legacy brief refusal did not explain the safety boundary"
+  [ "$(cat "$target")" = 'outside brief remains unchanged' ] || \
+    fail "hardlinked legacy brief target was modified"
+  assert_absent "$log" "hardlinked legacy brief reached endpoint creation"
+  pass "legacy brief upgrade refuses hard links before mutation"
+}
+
+test_spawn_rejects_swapped_legacy_brief() {
+  local case_dir home primary isolated outside target done log id fakebin out status
+  case_dir="$TMP_ROOT/swapped-legacy-brief"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  target="$outside/brief.md"
+  done="$case_dir/swap.done"
+  log="$case_dir/tmux.log"
+  id=local-env-swap-z5
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside"
+  fm_git_worktree "$primary" "$isolated" swapped-legacy-brief
+  printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
+  printf '%s\n' 'outside brief remains unchanged' > "$target"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+  write_race_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PATH="$home/data/$id/brief.md" FM_TEST_SWAP_TARGET="$target" \
+    FM_TEST_SWAP_DONE="$done" FM_REAL_PERL="$REAL_PERL" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a legacy brief swapped to a symlink"
+  assert_contains "$out" 'non-symlink regular file' \
+    "swapped legacy brief refusal did not explain the safety boundary"
+  [ "$(cat "$target")" = 'outside brief remains unchanged' ] || \
+    fail "swapped legacy brief target was modified"
+  assert_absent "$log" "swapped legacy brief reached endpoint creation"
+  pass "legacy brief upgrade refuses a replacement symlink before mutation"
 }
 
 test_brief_carries_the_boundary_contract() {
@@ -352,8 +488,12 @@ test_brief_carries_the_boundary_contract() {
 test_primary_local_presence_is_found_without_exposing_values
 test_true_absence_remains_absent
 test_process_and_isolated_sources_are_presence_only
+test_multiline_process_environment_does_not_spoof_presence
 test_unsafe_boundary_stops_safely
+test_local_source_swap_stops_safely
 test_spawn_worker_resolves_primary_local_presence
 test_spawn_rejects_symlinked_legacy_brief
+test_spawn_rejects_hardlinked_legacy_brief
+test_spawn_rejects_swapped_legacy_brief
 test_brief_carries_the_boundary_contract
 printf '# all fm-project-local-env tests passed\n'

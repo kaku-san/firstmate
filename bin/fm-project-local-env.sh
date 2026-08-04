@@ -104,71 +104,75 @@ ISOLATED_DIR=${FM_PROJECT_LOCAL_ENV_ISOLATED_DIR:-}
 }
 ISOLATED_DIR=$(canonical_dir FM_PROJECT_LOCAL_ENV_ISOLATED_DIR "$ISOLATED_DIR") || exit 2
 
-validate_optional_env_file() {
-  local label=$1 file=$2
-  if [ -e "$file" ] || [ -L "$file" ]; then
-    [ -f "$file" ] && [ ! -L "$file" ] || {
-      error "$label is not a safe regular file: $file"
-      return 2
-    }
-    [ -r "$file" ] || {
-      error "$label is not readable: $file"
-      return 2
-    }
-    return 0
-  fi
-  return 1
-}
-
 PRIMARY_ENV_FILE="$PRIMARY_DIR/$SOURCE_NAME"
 ISOLATED_ENV_FILE="$ISOLATED_DIR/$SOURCE_NAME"
-PRIMARY_ENV_STATE=absent
-ISOLATED_ENV_STATE=absent
-if validate_optional_env_file registered-primary-local-source "$PRIMARY_ENV_FILE"; then
-  PRIMARY_ENV_STATE=present
+
+scan_local_env_source() {
+  local label=$1 file=$2 output status
+  shift 2
+  if output=$(perl -MFcntl=:DEFAULT -MErrno=ENOENT -e '
+    my ($file, @keys) = @ARGV;
+    sysopen(my $source, $file, O_RDONLY | O_NOFOLLOW)
+      or exit($! == ENOENT ? 1 : 2);
+    stat($source) or exit 2;
+    exit 2 unless -f _;
+    my %found = map { $_ => 0 } @keys;
+    while (defined(my $line = <$source>)) {
+      chomp $line;
+      $line =~ s/\r\z//;
+      for my $key (@keys) {
+        next unless $line =~ /^\s*(?:export\s+)?\Q$key\E=(.*)\z/;
+        my $value = $1;
+        $value =~ s/\s+#.*\z//;
+        $value =~ s/^\s+//;
+        $value =~ s/\s+\z//;
+        $found{$key} = $value ne q{} && $value ne q{""} && $value ne (chr(39) x 2);
+      }
+    }
+    exit 2 unless eof($source);
+    print "$_\n" for grep { $found{$_} } @keys;
+  ' "$file" "$@"); then
+    printf '%s' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    1) return 1 ;;
+    *) error "$label is not a safe regular file or is unreadable: $file"; return 2 ;;
+  esac
+}
+
+PRIMARY_ENV_KEYS=
+if PRIMARY_ENV_KEYS=$(scan_local_env_source registered-primary-local-source "$PRIMARY_ENV_FILE" "$@"); then
+  :
 else
   file_status=$?
   [ "$file_status" = 1 ] || exit 2
 fi
-if validate_optional_env_file isolated-local-source "$ISOLATED_ENV_FILE"; then
-  ISOLATED_ENV_STATE=present
+ISOLATED_ENV_KEYS=
+if ISOLATED_ENV_KEYS=$(scan_local_env_source isolated-local-source "$ISOLATED_ENV_FILE" "$@"); then
+  :
 else
   file_status=$?
   [ "$file_status" = 1 ] || exit 2
 fi
 
 process_env_has_key() {
-  local key=$1
-  env | awk -v key="$key" '
-    BEGIN { prefix=key "="; found=0 }
-    index($0, prefix) == 1 {
-      value=substr($0, length(prefix) + 1)
-      if (value != "") found=1
-      exit
-    }
-    END { exit(found ? 0 : 1) }
-  ' >/dev/null
+  local key=$1 value
+  value=${!key-}
+  [ -n "$value" ]
 }
 
-local_env_file_has_key() {
-  local key=$1 file=$2 status
-  awk -v key="$key" '
-    BEGIN { prefix="^[[:space:]]*(export[[:space:]]+)?" key "="; found=0 }
-    $0 ~ prefix {
-      value=$0
-      sub(prefix, "", value)
-      sub(/[[:space:]]+#.*$/, "", value)
-      sub(/^[[:space:]]+/, "", value)
-      sub(/[[:space:]]+$/, "", value)
-      if (value == "" || value ~ /^""[[:space:]]*$/ || value ~ /^\047\047[[:space:]]*$/) found=0
-      else found=1
-    }
-    END { exit(found ? 0 : 1) }
-  ' "$file" >/dev/null 2>&1
-  status=$?
-  case "$status" in
-    0|1) return "$status" ;;
-    *) error "could not inspect local source safely: $file"; return 2 ;;
+key_is_listed() {
+  local key=$1 keys=$2
+  case "
+$keys
+" in
+    *"
+$key
+"*) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -178,23 +182,13 @@ check_key() {
     printf '%s: present source=process-environment\n' "$key"
     return 0
   fi
-  if [ "$ISOLATED_ENV_STATE" = present ]; then
-    if local_env_file_has_key "$key" "$ISOLATED_ENV_FILE"; then
-      printf '%s: present source=isolated-project/.env.local\n' "$key"
-      return 0
-    else
-      source_status=$?
-      [ "$source_status" = 1 ] || return 2
-    fi
+  if key_is_listed "$key" "$ISOLATED_ENV_KEYS"; then
+    printf '%s: present source=isolated-project/.env.local\n' "$key"
+    return 0
   fi
-  if [ "$PRIMARY_ENV_STATE" = present ]; then
-    if local_env_file_has_key "$key" "$PRIMARY_ENV_FILE"; then
-      printf '%s: present source=registered-primary/.env.local\n' "$key"
-      return 0
-    else
-      source_status=$?
-      [ "$source_status" = 1 ] || return 2
-    fi
+  if key_is_listed "$key" "$PRIMARY_ENV_KEYS"; then
+    printf '%s: present source=registered-primary/.env.local\n' "$key"
+    return 0
   fi
   printf '%s: absent\n' "$key"
   return 1
