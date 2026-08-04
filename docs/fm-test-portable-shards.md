@@ -76,7 +76,7 @@ Hints only affect balance: the coverage guard keeps the partition complete and d
 | `portable-serial-4of4` | 21 | 300946 ms (~300.9 s) |
 | imbalance | | 16 ms |
 
-Scripts added since that measurement carry the default weight, so the lane now holds 72 scripts against 69 hints.
+Scripts added since that measurement carry the default weight, so the lane now holds 81 scripts against 69 hints.
 
 The single longest script, `tests/fm-pr-check-security.test.sh` at 199573 ms, is the floor for any shard count.
 
