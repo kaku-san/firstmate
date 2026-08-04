@@ -192,8 +192,10 @@ test_kimi_launch_then_send_is_verified() {
   assert_contains "$out" "spawned $id harness=kimi" "kimi spawn did not report success"
 
   launch=$(cat "$CASE_DIR/launch.log")
-  [ "$launch" = "'$FAKEBIN_DIR/kimi' --model 'kimi-code/k3' --auto" ] \
-    || fail "kimi launch did not use the absolute binary, model, and --auto only: $launch"
+  assert_contains "$launch" "'$FAKEBIN_DIR/kimi' --model 'kimi-code/k3' --auto" \
+    "kimi launch did not use the absolute binary, model, and --auto"
+  assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
+    "kimi launch omitted the path-only local-env boundary"
   assert_not_contains "$launch" "--effort" "kimi launch emitted a nonexistent effort flag"
   assert_not_contains "$launch" "turn-ended" "kimi launch embedded a turn-end path"
   assert_not_contains "$launch" "__TURNEND__" "kimi launch retained a turn-end placeholder"
@@ -449,8 +451,10 @@ test_kimi_falls_back_to_expanded_home_binary() {
   rc=$?
   expect_code 0 "$rc" "Kimi HOME fallback spawn should succeed"
   launch=$(cat "$CASE_DIR/launch.log")
-  [ "$launch" = "'$fallback' --auto" ] \
-    || fail "Kimi fallback did not expand HOME into an absolute executable: $launch"
+  assert_contains "$launch" "'$fallback' --auto" \
+    "Kimi fallback did not expand HOME into an absolute executable"
+  assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
+    "Kimi fallback omitted the path-only local-env boundary"
   pass "fm-spawn: Kimi fallback expands the active HOME"
 }
 

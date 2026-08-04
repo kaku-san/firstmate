@@ -128,6 +128,13 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+# Ship/scout launches also expose only path metadata for the project-local
+# configuration boundary: FM_PROJECT_LOCAL_ENV_CHECK, FM_PRIMARY_PROJECT_DIR,
+# FM_PROJECT_LOCAL_ENV_ISOLATED_DIR, and FM_PROJECT_LOCAL_ENV_FILE=.env.local.
+# The worker invokes the checker for presence-only credential/configuration
+# conclusions; no local environment value is copied, exported, or recorded.
+# The path metadata is backend-neutral and is set in the task pane shell before
+# every supported harness launch.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -2050,6 +2057,16 @@ LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 # an unset value is the single-store default and needs no prefix.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+fi
+# Keep the registered primary project's supported local source discoverable to
+# the worker without copying it into the isolated worktree or exporting values.
+if [ "$KIND" != secondmate ]; then
+  LOCAL_ENV_PRIMARY_DIR=$PROJ_ABS_REAL
+  LOCAL_ENV_ISOLATED_DIR=$(cd "$WT" && pwd -P)
+  sq_local_env_check=$(shell_quote "$FM_ROOT/bin/fm-project-local-env.sh")
+  sq_local_env_primary=$(shell_quote "$LOCAL_ENV_PRIMARY_DIR")
+  sq_local_env_isolated=$(shell_quote "$LOCAL_ENV_ISOLATED_DIR")
+  LAUNCH="FM_PROJECT_LOCAL_ENV_CHECK=$sq_local_env_check FM_PRIMARY_PROJECT_DIR=$sq_local_env_primary FM_PROJECT_LOCAL_ENV_ISOLATED_DIR=$sq_local_env_isolated FM_PROJECT_LOCAL_ENV_FILE=.env.local $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")

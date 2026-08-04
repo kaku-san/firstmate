@@ -297,6 +297,16 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+IFS= read -r -d '' LOCAL_ENV_SECTION <<'EOF' || true
+# Project-local configuration boundary
+For project-local credential or configuration checks, the spawn exposes `FM_PROJECT_LOCAL_ENV_CHECK`, `FM_PRIMARY_PROJECT_DIR`, `FM_PROJECT_LOCAL_ENV_ISOLATED_DIR`, and `FM_PROJECT_LOCAL_ENV_FILE` as path-only task-boundary metadata.
+Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]` and follow its presence-only result.
+The helper checks the process environment, the isolated copy's supported `.env.local`, and the registered primary project's supported `.env.local` without printing or exporting values.
+An exit status of 2 means the task-boundary configuration is unsafe or indeterminate, not that the credential is absent.
+Read the helper's `--help` before using it, and never source or copy the local environment file.
+EOF
+LOCAL_ENV_SECTION=${LOCAL_ENV_SECTION%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -305,6 +315,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$LOCAL_ENV_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -414,6 +426,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$LOCAL_ENV_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
