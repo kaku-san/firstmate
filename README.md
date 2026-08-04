@@ -48,7 +48,7 @@ The fork-only policy was added in [PR #1](https://github.com/kaku-san/firstmate/
 Upstream continues independently, so the list below describes only fork-owned behavior present on this fork's default branch, not branch-only or planned work.
 
 - **Parallel-first intake** - At intake, and when long validation, infrastructure or platform work, an external wait, or a blocker appears, firstmate identifies independently valuable proof or delivery paths already authorized by the request or accepted criteria and dispatches them immediately when they can proceed independently.
-- **Narrow serialization** - File overlap, a preference among bounded paths for the same authorized outcome, or a longer integrated path alone does not force serialization; firstmate serializes only for a named semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete safety condition.
+- **Narrower serialization** - The fork requires a named reason to serialize and clarifies that choosing among bounded paths for the same authorized outcome, or the existence of a longer integrated path, is not itself a dependency.
 - **Bounded authority** - Parallel decomposition is limited to independent outcomes rather than redundant planners, duplicate implementations, or competing approaches, and it never grants implementation authorization or expands `yolo` authority.
 
 The authoritative intake policy is documented in [AGENTS.md](AGENTS.md#intake-and-authority).
