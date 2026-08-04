@@ -297,6 +297,8 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+LOCAL_ENV_SECTION=$("$SCRIPT_DIR/fm-project-local-env.sh" brief-section)
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -305,6 +307,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$LOCAL_ENV_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
@@ -414,6 +418,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $HERDR_SECTION
+
+$LOCAL_ENV_SECTION
 
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.

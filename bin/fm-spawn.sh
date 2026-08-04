@@ -128,6 +128,17 @@
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
+# Ship/scout launches also expose only path metadata for the project-local
+# configuration boundary: FM_PROJECT_LOCAL_ENV_CHECK, FM_PRIMARY_PROJECT_DIR,
+# FM_PROJECT_LOCAL_ENV_ISOLATED_DIR, and FM_PROJECT_LOCAL_ENV_FILE=.env.local.
+# The worker invokes the checker for presence-only credential/configuration
+# conclusions; no local environment value is copied, exported, or recorded.
+# Before endpoint creation, spawn adds the executable-owned boundary section to
+# a legacy ship/scout brief only through an atomic replacement of a non-symlink
+# regular single-linked brief.md inside the resolved task data directory.
+# An unsafe path or a brief that changes during the upgrade fails closed.
+# The path metadata is backend-neutral and is set in the task pane shell before
+# every supported harness launch.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -1154,7 +1165,103 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-[ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+upgrade_legacy_brief() {
+  local task_dir task_dir_real brief_dir_real brief_name local_env_section status
+  task_dir="$DATA/$ID"
+  task_dir_real=$(CDPATH='' cd -P -- "$task_dir" 2>/dev/null && pwd -P) || {
+    echo "error: task data directory cannot be resolved: $task_dir" >&2
+    return 1
+  }
+  brief_dir_real=$(CDPATH='' cd -P -- "$(dirname "$BRIEF")" 2>/dev/null && pwd -P) || {
+    echo "error: task brief directory cannot be resolved: $(dirname "$BRIEF")" >&2
+    return 1
+  }
+  [ "$brief_dir_real" = "$task_dir_real" ] || {
+    echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
+    return 1
+  }
+  brief_name=$(basename "$BRIEF")
+  [ "$brief_name" = brief.md ] || {
+    echo "error: task brief name is invalid within resolved task data directory: $BRIEF" >&2
+    return 1
+  }
+  local_env_section=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section) || {
+    echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
+    return 1
+  }
+  if perl -MFcntl=:DEFAULT -MCwd=getcwd -MIO::Handle -e '
+    my ($directory, $name, $section) = @ARGV;
+    chdir($directory) or exit 3;
+    exit 3 unless getcwd() eq $directory;
+    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW) or exit 3;
+    my @source_stat = stat($source) or exit 3;
+    exit 3 unless -f _ && $source_stat[3] == 1;
+    my $marker = q{Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`};
+    my $found = 0;
+    while (defined(my $line = <$source>)) {
+      $found = 1 if index($line, $marker) >= 0;
+    }
+    exit 3 unless eof($source);
+    my @named_stat = lstat($name);
+    exit 4 unless @named_stat && $named_stat[0] == $source_stat[0]
+      && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1;
+    exit 0 if $found;
+    seek($source, 0, 0) or exit 5;
+    my ($temporary, $output);
+    END { unlink($temporary) if defined($temporary) }
+    for my $attempt (1 .. 100) {
+      $temporary = sprintf ".brief.md.fm-%d-%d-%d", $$, time, $attempt;
+      last if sysopen($output, $temporary,
+        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+      undef $output;
+    }
+    exit 5 unless $output;
+    while (1) {
+      my $read = read($source, my $buffer, 65536);
+      exit 5 unless defined $read;
+      last if $read == 0;
+      print {$output} $buffer or exit 5;
+    }
+    print {$output} "\n$section\n" or exit 5;
+    chmod($source_stat[2] & 07777, $output) or exit 5;
+    $output->sync or exit 5;
+    close($output) or exit 5;
+    @named_stat = lstat($name);
+    unless (@named_stat && $named_stat[0] == $source_stat[0]
+      && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1) {
+      unlink($temporary);
+      exit 4;
+    }
+    rename($temporary, $name) or do { unlink($temporary); exit 5 };
+    undef $temporary;
+  ' "$task_dir_real" "$brief_name" "$local_env_section"; then
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    3)
+      echo "error: task brief must be a non-symlink regular file with one link within resolved task data directory: $BRIEF" >&2
+      ;;
+    4)
+      echo "error: task brief changed during safe legacy upgrade: $BRIEF" >&2
+      ;;
+    *)
+      echo "error: could not atomically add the project-local configuration boundary to $BRIEF" >&2
+      ;;
+  esac
+  return 1
+}
+
+if [ "$KIND" != secondmate ]; then
+  if [ ! -e "$BRIEF" ] && [ ! -L "$BRIEF" ]; then
+    echo "error: no brief at $BRIEF" >&2
+    exit 1
+  fi
+  upgrade_legacy_brief || exit 1
+else
+  [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
@@ -2050,6 +2157,16 @@ LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 # an unset value is the single-store default and needs no prefix.
 if [ "$HARNESS" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   LAUNCH="CLAUDE_CONFIG_DIR=$(shell_quote "$CLAUDE_CONFIG_DIR") $LAUNCH"
+fi
+# Keep the registered primary project's supported local source discoverable to
+# the worker without copying it into the isolated worktree or exporting values.
+if [ "$KIND" != secondmate ]; then
+  LOCAL_ENV_PRIMARY_DIR=$PROJ_ABS_REAL
+  LOCAL_ENV_ISOLATED_DIR=$(cd "$WT" && pwd -P)
+  sq_local_env_check=$(shell_quote "$FM_ROOT/bin/fm-project-local-env.sh")
+  sq_local_env_primary=$(shell_quote "$LOCAL_ENV_PRIMARY_DIR")
+  sq_local_env_isolated=$(shell_quote "$LOCAL_ENV_ISOLATED_DIR")
+  LAUNCH="FM_PROJECT_LOCAL_ENV_CHECK=$sq_local_env_check FM_PRIMARY_PROJECT_DIR=$sq_local_env_primary FM_PROJECT_LOCAL_ENV_ISOLATED_DIR=$sq_local_env_isolated FM_PROJECT_LOCAL_ENV_FILE=.env.local $LAUNCH"
 fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")

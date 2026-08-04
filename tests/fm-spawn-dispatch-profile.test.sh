@@ -116,6 +116,14 @@ assert_meta_profile() {
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
 }
 
+local_env_launch_prefix() {
+  local primary isolated
+  primary=$(cd "$1" && pwd -P)
+  isolated=$(cd "$2" && pwd -P)
+  printf "FM_PROJECT_LOCAL_ENV_CHECK='%s' FM_PRIMARY_PROJECT_DIR='%s' FM_PROJECT_LOCAL_ENV_ISOLATED_DIR='%s' FM_PROJECT_LOCAL_ENV_FILE=.env.local" \
+    "$ROOT/bin/fm-project-local-env.sh" "$primary" "$isolated"
+}
+
 test_no_profile_keeps_claude_profile_defaults() {
   local rec id out status expected launch
   id=profile-off-z1
@@ -129,7 +137,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
+  expected="$(local_env_launch_prefix "$PROJ_DIR" "$WT_DIR") CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -349,7 +357,7 @@ test_active_dispatch_profile_allows_positional_harness() {
 }
 
 test_active_dispatch_profile_allows_raw_launch_command() {
-  local rec id out status launch
+  local rec id out status expected launch
   id=profile-raw-z15
   rec=$(make_spawn_case profile-raw claude "$id")
   read_case_record "$rec"
@@ -362,7 +370,8 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   assert_contains "$out" "spawned $id harness=custom-agent" "spawn did not report raw command harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
   launch=$(cat "$LAUNCH_LOG")
-  [ "$launch" = "custom-agent --flag" ] || fail "raw launch command changed"$'\n'"actual: $launch"
+  expected="$(local_env_launch_prefix "$PROJ_DIR" "$WT_DIR") custom-agent --flag"
+  [ "$launch" = "$expected" ] || fail "raw launch command changed"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
