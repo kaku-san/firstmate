@@ -297,7 +297,7 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
-LOCAL_ENV_SECTION=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section)
+LOCAL_ENV_SECTION=$("$SCRIPT_DIR/fm-project-local-env.sh" brief-section)
 
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF

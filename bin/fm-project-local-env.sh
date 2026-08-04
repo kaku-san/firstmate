@@ -7,8 +7,10 @@
 # The spawn boundary supplies FM_PRIMARY_PROJECT_DIR for the registered primary
 # project, FM_PROJECT_LOCAL_ENV_ISOLATED_DIR for the isolated copy, and
 # FM_PROJECT_LOCAL_ENV_FILE for the supported local source. The only supported
-# source name is .env.local; an absent or unsafe source is never treated as a
-# missing credential. The lookup also checks the worker process environment.
+# source name is .env.local. Missing task-boundary path metadata or an unsafe
+# source is indeterminate rather than proof that a credential is missing.
+# An absent source file is allowed and contributes no matching key.
+# The lookup also checks the worker process environment.
 # For presence classification, a whitespace-delimited # suffix is an inline
 # comment; an empty, "", or '' assignment before that suffix remains absent.
 #
@@ -16,7 +18,7 @@
 # category. It never prints, stores, exports, or returns a configuration value.
 # Exit status is 0 when every key is non-empty in one allowed source, 1 when at
 # least one key is absent from all allowed sources, and 2 for invalid arguments,
-# missing task-boundary paths, or malformed/unsafe local files. Callers must
+# missing or malformed task-boundary paths, or unsafe local files. Callers must
 # report exit 2 as indeterminate rather than as a missing credential.
 set -eu
 
