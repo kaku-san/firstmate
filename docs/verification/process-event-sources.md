@@ -7,6 +7,45 @@ This record holds reusable version-scoped evidence for the runner's active guara
 
 Verified on 2026-07-31 on macOS (Darwin 25.5.0) with `lavish-axi` 0.1.45 installed.
 
+## Desktop-protected artifacts and the upstream reproduction
+
+Re-verified on 2026-08-04 on macOS 15.6.1 (Darwin 24.6.0) with `lavish-axi` 0.1.43.
+The initiating trigger is opening an authored HTML path under a Desktop-protected home with the bare upstream `lavish-axi` command.
+The masking condition is the authored path's protected Desktop ancestry rather than its bytes, mode, owner, or HTML content.
+The visible symptom is a successful session-open response followed by an HTTP 500 from the artifact iframe, which leaves the browser behind `Checking layout` and appears blank.
+
+A minimal upstream reproduction needs only a regular HTML file:
+
+```sh
+printf '<!doctype html><title>minimal</title>\n' > /Users/akanshuarghjain/Desktop/firstmate/.lavish/minimal.html
+LAVISH_AXI_NO_OPEN=1 lavish-axi /Users/akanshuarghjain/Desktop/firstmate/.lavish/minimal.html --no-gate
+curl -sS -i http://127.0.0.1:4387/artifact/<session-key>/index.html
+```
+
+On the reproduced Desktop path, the session-open call returned a URL successfully, but the iframe request returned:
+
+```text
+HTTP 500
+{"error":"EPERM: operation not permitted, open '/Users/akanshuarghjain/Desktop/firstmate/.lavish/khoj-way-forward.html'"}
+```
+
+The earliest divergence is inside Lavish's artifact-serving request, after session creation and before any iframe HTML reaches the browser.
+The installed Lavish server route reads the session's authored `file` directly, so this failure is in Lavish's read path rather than Firstmate's content generation or process-event runner.
+
+The smallest counterfactual is to copy the exact same bytes to the unprotected per-user XDG data location, set the copy to mode 0600, and open that path.
+`cmp` returned success for the 30,180-byte Desktop and XDG copies, while the Desktop copy was mode 0644 and the XDG copy was mode 0600.
+The Desktop iframe returned HTTP 500, while the XDG iframe returned HTTP 200 and served 30,232 bytes.
+A 718-byte standalone HTML artifact already present under the same Desktop `.lavish` tree reproduced the same HTTP 500, separating the failure from Khoj content.
+
+Disconfirming checks do not establish a macOS TCC cause and rule out simpler permission or content explanations.
+Both files had the same owner and volume, the Desktop file was readable at mode 0644, and the two files had identical bytes.
+A direct read by `/usr/local/Cellar/node/26.5.0_1/bin/node` succeeded for both paths, and the detached Lavish server ran as the same user from that same Node binary.
+The failing and passing files had the same observed `com.apple.provenance` extended attribute and no differing ACL or file flags in the recorded inspection.
+These facts establish the path-sensitive upstream failure and justify staging, but do not identify the operating-system mechanism behind Lavish's `EPERM`.
+
+The Firstmate workaround is independently revertible because it is limited to the Lavish adapter's `open`, `stage`, and `arm` boundary.
+It preserves the authored file, atomically stages a private mode-0600 copy, and gives both `lavish-axi` open and `fm-procevent-lavish.sh arm` the same staged path.
+
 ## The published Lavish poll interface the adapter wraps
 
 Verified at implementation time without upgrading the installed build:

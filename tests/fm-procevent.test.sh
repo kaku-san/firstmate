@@ -64,6 +64,13 @@ procevent_teardown() {
 }
 trap procevent_teardown EXIT
 new_home() { mkdir -p "$1/state"; }
+file_mode() {
+  if [ "$(uname)" = Darwin ]; then
+    stat -f %Lp "$1"
+  else
+    stat -c %a "$1"
+  fi
+}
 wake_payloads() { awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null; }
 
 first_result() {  # <home> <source-id>: print the first captured result, if any
@@ -450,7 +457,8 @@ pass "failed terminal retirement is fail-closed and idempotently recoverable"
 HLT="$TMP_ROOT/hlt"; new_home "$HLT"
 LAVISH_BIN=$(fm_fakebin "$TMP_ROOT/lavish-stub")
 LAVISH_POLL_COUNT="$TMP_ROOT/lavish-poll-count"
-export LAVISH_POLL_COUNT
+LAVISH_POLL_PATH="$TMP_ROOT/lavish-poll-path"
+export LAVISH_POLL_COUNT LAVISH_POLL_PATH
 cat > "$LAVISH_BIN/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 # Stand-in for `lavish-axi poll <file>` around a human `Send & End`: the final
@@ -459,6 +467,7 @@ cat > "$LAVISH_BIN/lavish-axi" <<'SH'
 n=$(cat "$LAVISH_POLL_COUNT" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s\n' "$n" > "$LAVISH_POLL_COUNT"
+printf '%s\n' "$2" > "$LAVISH_POLL_PATH"
 if [ "$n" = 1 ]; then
   printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n'
 else
@@ -470,9 +479,10 @@ REVIEW_ART="$TMP_ROOT/review.html"
 printf '<h1>review</h1>\n' > "$REVIEW_ART"
 lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
 PE_TRACKED+=("$HLT|$lavish_id")
-PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
+HLT_XDG="$TMP_ROOT/hlt-xdg"
+PATH="$LAVISH_BIN:$PATH" XDG_DATA_HOME="$HLT_XDG" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
 for _ in $(seq 1 6); do
-  PATH="$LAVISH_BIN:$PATH" pe "$HLT" reconcile >/dev/null
+  PATH="$LAVISH_BIN:$PATH" XDG_DATA_HOME="$HLT_XDG" pe "$HLT" reconcile >/dev/null
   sleep 0.3
 done
 [ "$(cat "$LAVISH_POLL_COUNT")" = 1 ] \
@@ -486,9 +496,102 @@ assert_absent "$HLT/state/procevent/$lavish_id.source" "the ended review source 
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/$lavish_id.claim" "the ended review releases its owned claim"
 LAVISH_RESULT=$(first_result "$HLT" "$lavish_id" || true)
 assert_grep 'ship it' "$LAVISH_RESULT" "automatic retirement retains the human's final feedback"
-out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
+[ "$(cat "$LAVISH_POLL_PATH")" != "$REVIEW_ART" ] \
+  || fail "Lavish arm still polled the protected authored path"
+[ -f "$(cat "$LAVISH_POLL_PATH")" ] || fail "Lavish arm registered a missing staged path"
+[ "$(file_mode "$(cat "$LAVISH_POLL_PATH")")" = 600 ] \
+  || fail "Lavish arm did not register a private staged artifact"
+out=$(PATH="$LAVISH_BIN:$PATH" XDG_DATA_HOME="$HLT_XDG" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
 assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
+
+# --- Desktop-protected artifact staging boundary ---------------------------
+# The authored source stays outside the private XDG staging tree. The fake open
+# command records the exact staged argv while returning the public session shape.
+HLS_ROOT="$TMP_ROOT/lavish-stage"
+HLS_SOURCE_DIR="$HLS_ROOT/source dir"
+HLS_XDG="$HLS_ROOT/xdg data"
+HLS_HOME_A="$HLS_ROOT/home a"
+HLS_HOME_B="$HLS_ROOT/home b"
+HLS_BIN="$HLS_ROOT/fakebin"
+HLS_CALL="$HLS_ROOT/open-call"
+mkdir -p "$HLS_SOURCE_DIR" "$HLS_XDG" "$HLS_HOME_A" "$HLS_HOME_B" "$HLS_BIN"
+HLS_ART="$HLS_SOURCE_DIR/review with spaces.html"
+printf '<!doctype html>\n<h1>exact bytes & spaces</h1>\n' > "$HLS_ART"
+chmod 0644 "$HLS_ART"
+
+stage_a=$(FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" stage "$HLS_ART")
+stage_a_repeat=$(FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" stage "$HLS_ART")
+[ "$stage_a" = "$stage_a_repeat" ] || fail "repeated Lavish staging changed the stable destination"
+[ ! -L "$stage_a" ] || fail "Lavish staging created a symlink"
+[ "$(file_mode "$stage_a")" = 600 ] || fail "Lavish staged artifact mode was not 0600"
+cmp -s "$HLS_ART" "$stage_a" || fail "Lavish staging changed exact artifact bytes"
+[ -z "$(find "$HLS_XDG" -name '.fm-lavish-stage.*' -print -quit)" ] \
+  || fail "Lavish staging left an atomic temporary file"
+pass "Lavish stages exact bytes from a spaced path atomically and privately"
+
+stage_b=$(FM_HOME="$HLS_HOME_B" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" stage "$HLS_ART")
+[ "$stage_a" != "$stage_b" ] || fail "Lavish staging collided across Firstmate homes"
+[ "$(file_mode "$stage_b")" = 600 ] || fail "second-home Lavish staging mode was not 0600"
+cmp -s "$HLS_ART" "$stage_b" || fail "second-home Lavish staging changed exact bytes"
+pass "Lavish staging isolates identical artifacts per Firstmate home"
+
+HLS_LINK="$HLS_ROOT/source-link.html"
+ln -s "$HLS_ART" "$HLS_LINK"
+symlink_status=0
+symlink_out=$(FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" stage "$HLS_LINK" 2>&1) || symlink_status=$?
+[ "$symlink_status" -ne 0 ] || fail "Lavish staging followed a symlinked source"
+assert_contains "$symlink_out" "contains a symlink" \
+  "Lavish reports a symlinked source concretely"
+HLS_ESCAPE="$HLS_ROOT/escape"
+HLS_XDG_LINK="$HLS_ROOT/xdg-link"
+mkdir -p "$HLS_ESCAPE"
+ln -s "$HLS_ESCAPE" "$HLS_XDG_LINK"
+destination_status=0
+destination_out=$(FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG_LINK" \
+  "$ROOT/bin/fm-procevent-lavish.sh" stage "$HLS_ART" 2>&1) || destination_status=$?
+[ "$destination_status" -ne 0 ] || fail "Lavish staging followed a symlinked destination root"
+assert_contains "$destination_out" "contains a symlink" \
+  "Lavish reports a symlinked staging root concretely"
+pass "Lavish staging rejects source and destination symlinks"
+
+cat > "$HLS_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$LAVISH_OPEN_CALL"
+printf 'session:\n  file: %s\n  url: "http://127.0.0.1/session/staged"\n  status: opened\n' "$1"
+SH
+chmod +x "$HLS_BIN/lavish-axi"
+open_out=$(PATH="$HLS_BIN:$PATH" LAVISH_OPEN_CALL="$HLS_CALL" \
+  FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" open "$HLS_ART" --no-open 2>"$HLS_ROOT/open.err")
+assert_contains "$open_out" "session:" "Lavish open prints a usable session result"
+[ "$(cat "$HLS_CALL")" = "$stage_a" ] || fail "Lavish open passed the authored path instead of the staged path"
+assert_contains "$(cat "$HLS_ROOT/open.err")" "staged: $stage_a" \
+  "Lavish open reports the staged path"
+pass "Lavish open reuses the stable staged path and prints the session"
+
+cat > "$HLS_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'simulated Lavish open failure\n' >&2
+exit 23
+SH
+chmod +x "$HLS_BIN/lavish-axi"
+open_failure_status=0
+open_failure_out=$(PATH="$HLS_BIN:$PATH" LAVISH_OPEN_CALL="$HLS_CALL" \
+  FM_HOME="$HLS_HOME_A" XDG_DATA_HOME="$HLS_XDG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" open "$HLS_ART" --no-open 2>&1) \
+  || open_failure_status=$?
+[ "$open_failure_status" -ne 0 ] || fail "Lavish open hid a command failure"
+assert_contains "$open_failure_out" "simulated Lavish open failure" \
+  "Lavish open preserves the underlying failure"
+assert_contains "$open_failure_out" "could not open staged artifact" \
+  "Lavish open reports the staged failure concretely"
+cmp -s "$HLS_ART" "$stage_a" || fail "Lavish open altered the authored source or staged bytes"
+pass "Lavish open reports command failures without a blank session"
 
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a

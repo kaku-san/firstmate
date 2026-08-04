@@ -22,11 +22,14 @@ Firstmate registers a source, keeps working, and is woken when that process comp
 ## Arming a source
 
 Use the adapter, not the generic runner, for a real source.
-For a Lavish review artifact:
+For a Lavish review artifact, open the authored file through the adapter and then arm the same authored path:
 
 ```sh
+bin/fm-procevent-lavish.sh open <artifact.html>
 bin/fm-procevent-lavish.sh arm <artifact.html>
 ```
+
+The adapter stages one private, stable copy for both commands, so never call `lavish-axi` directly on a protected authored path.
 
 A configured remote secondmate reply source is armed and handled through `bin/fm-procevent-remote-reply.sh`.
 Its header owns exact commands, while the adapter owns cursor continuity, validated deduplicated status ingest, path-confined document fetch, acknowledgement, and re-arming after a good delta.

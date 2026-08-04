@@ -415,7 +415,11 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 ## Process-to-event sources (state/procevent)
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
-`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps the currently published `lavish-axi` open and poll interfaces.
+
+Open a local HTML artifact with `bin/fm-procevent-lavish.sh open <artifact.html>` instead of passing its authored path directly to `lavish-axi`.
+The adapter stages the bytes privately and atomically, and `bin/fm-procevent-lavish.sh arm <artifact.html>` reuses that same staged path for the long poll.
+The authored file remains the source of truth, and the staging failure boundary plus upstream reproduction are recorded in [process-event verification](verification/process-event-sources.md#desktop-protected-artifacts-and-the-upstream-reproduction).
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before it is published.
