@@ -70,10 +70,10 @@ Hints only affect balance: the coverage guard keeps the partition complete and d
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of4` | 17 | 300930 ms (~300.9 s) |
-| `portable-serial-2of4` | 18 | 300946 ms (~300.9 s) |
-| `portable-serial-3of4` | 16 | 300940 ms (~300.9 s) |
-| `portable-serial-4of4` | 21 | 300946 ms (~300.9 s) |
+| `portable-serial-1of4` | 15 | 285945 ms (~285.9 s) |
+| `portable-serial-2of4` | 18 | 285944 ms (~285.9 s) |
+| `portable-serial-3of4` | 17 | 285929 ms (~285.9 s) |
+| `portable-serial-4of4` | 19 | 285944 ms (~285.9 s) |
 | imbalance | | 16 ms |
 
 Scripts added since that measurement carry the default weight, so the lane now holds 81 scripts against 69 hints.
