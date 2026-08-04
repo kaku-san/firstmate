@@ -176,8 +176,16 @@ $1
 EOF
 }
 
+local_env_launch_prefix() {
+  local primary isolated
+  primary=$(cd "$1" && pwd -P)
+  isolated=$(cd "$2" && pwd -P)
+  printf "FM_PROJECT_LOCAL_ENV_CHECK='%s' FM_PRIMARY_PROJECT_DIR='%s' FM_PROJECT_LOCAL_ENV_ISOLATED_DIR='%s' FM_PROJECT_LOCAL_ENV_FILE=.env.local" \
+    "$ROOT/bin/fm-project-local-env.sh" "$primary" "$isolated"
+}
+
 test_kimi_launch_then_send_is_verified() {
-  local id rec out rc launch pointer brief_real meta task_tmp
+  local id rec out rc launch expected pointer brief_real meta task_tmp
   id="kimi-success-z1-$$"
   task_tmp="/tmp/fm-$id"
   KIMI_RUNTIME_TASK_TMP=$task_tmp
@@ -192,10 +200,9 @@ test_kimi_launch_then_send_is_verified() {
   assert_contains "$out" "spawned $id harness=kimi" "kimi spawn did not report success"
 
   launch=$(cat "$CASE_DIR/launch.log")
-  assert_contains "$launch" "'$FAKEBIN_DIR/kimi' --model 'kimi-code/k3' --auto" \
-    "kimi launch did not use the absolute binary, model, and --auto"
-  assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
-    "kimi launch omitted the path-only local-env boundary"
+  expected="$(local_env_launch_prefix "$PROJ_DIR" "$WT_DIR") '$FAKEBIN_DIR/kimi' --model 'kimi-code/k3' --auto"
+  [ "$launch" = "$expected" ] \
+    || fail "kimi launch did not use the exact path-only boundary, absolute binary, model, and --auto"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   assert_not_contains "$launch" "--effort" "kimi launch emitted a nonexistent effort flag"
   assert_not_contains "$launch" "turn-ended" "kimi launch embedded a turn-end path"
   assert_not_contains "$launch" "__TURNEND__" "kimi launch retained a turn-end placeholder"
@@ -439,7 +446,7 @@ test_kimi_teardown_removes_pointer_and_registry_token() {
 }
 
 test_kimi_falls_back_to_expanded_home_binary() {
-  local id rec out rc launch fallback
+  local id rec out rc launch expected fallback
   id=kimi-fallback-z4
   rec=$(make_spawn_case fallback "$id")
   read_spawn_record "$rec"
@@ -451,10 +458,9 @@ test_kimi_falls_back_to_expanded_home_binary() {
   rc=$?
   expect_code 0 "$rc" "Kimi HOME fallback spawn should succeed"
   launch=$(cat "$CASE_DIR/launch.log")
-  assert_contains "$launch" "'$fallback' --auto" \
-    "Kimi fallback did not expand HOME into an absolute executable"
-  assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
-    "Kimi fallback omitted the path-only local-env boundary"
+  expected="$(local_env_launch_prefix "$PROJ_DIR" "$WT_DIR") '$fallback' --auto"
+  [ "$launch" = "$expected" ] \
+    || fail "Kimi fallback did not use the exact path-only boundary and expanded HOME executable"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "fm-spawn: Kimi fallback expands the active HOME"
 }
 
