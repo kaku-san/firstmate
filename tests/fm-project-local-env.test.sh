@@ -299,6 +299,38 @@ test_spawn_worker_resolves_primary_local_presence() {
   pass "isolated worker resolves primary-local presence through path-only metadata"
 }
 
+test_spawn_rejects_symlinked_legacy_brief() {
+  local case_dir home primary isolated outside target log id fakebin out status
+  case_dir="$TMP_ROOT/symlinked-legacy-brief"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  target="$outside/brief.md"
+  log="$case_dir/tmux.log"
+  id=local-env-symlink-z3
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside"
+  fm_git_worktree "$primary" "$isolated" symlinked-legacy-brief
+  printf '%s\n' 'outside brief remains unchanged' > "$target"
+  ln -s "$target" "$home/data/$id/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a symlinked legacy brief"
+  assert_contains "$out" 'non-symlink regular file within resolved task data directory' \
+    "symlinked legacy brief refusal did not explain the safety boundary"
+  [ "$(cat "$target")" = 'outside brief remains unchanged' ] || \
+    fail "symlinked legacy brief target was modified"
+  assert_absent "$log" "symlinked legacy brief reached endpoint creation"
+  pass "legacy brief upgrade refuses symlink targets before mutation"
+}
+
 test_brief_carries_the_boundary_contract() {
   local home brief id
   home="$TMP_ROOT/brief"
@@ -322,5 +354,6 @@ test_true_absence_remains_absent
 test_process_and_isolated_sources_are_presence_only
 test_unsafe_boundary_stops_safely
 test_spawn_worker_resolves_primary_local_presence
+test_spawn_rejects_symlinked_legacy_brief
 test_brief_carries_the_boundary_contract
 printf '# all fm-project-local-env tests passed\n'

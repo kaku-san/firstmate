@@ -1163,6 +1163,33 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+validate_legacy_brief_path() {
+  local task_dir task_dir_real brief_dir_real
+  task_dir="$DATA/$ID"
+  task_dir_real=$(CDPATH='' cd -P -- "$task_dir" 2>/dev/null && pwd -P) || {
+    echo "error: task data directory cannot be resolved: $task_dir" >&2
+    return 1
+  }
+  [ ! -L "$BRIEF" ] && [ -f "$BRIEF" ] || {
+    echo "error: task brief must be a non-symlink regular file within resolved task data directory: $BRIEF" >&2
+    return 1
+  }
+  brief_dir_real=$(CDPATH='' cd -P -- "$(dirname "$BRIEF")" 2>/dev/null && pwd -P) || {
+    echo "error: task brief directory cannot be resolved: $(dirname "$BRIEF")" >&2
+    return 1
+  }
+  case "$brief_dir_real/" in
+    "$task_dir_real/"*) ;;
+    *)
+      echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
+      return 1
+      ;;
+  esac
+}
+
+if [ "$KIND" != secondmate ]; then
+  validate_legacy_brief_path || exit 1
+fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 # shellcheck disable=SC2016 # The brief marker must contain the literal variable reference.
 if [ "$KIND" != secondmate ] \
