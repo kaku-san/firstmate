@@ -41,7 +41,7 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
-# UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.
+# UNIT 1: fm_afk_clear_stale_artifacts removes the session-scoped artifacts.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
   local st
@@ -49,7 +49,10 @@ unit_clear_stale() {
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
   : > "$st/state/.subsuper-escalations.since"
+  : > "$st/state/.subsuper-escalation-reserved"
+  : > "$st/state/.subsuper-escalation-offered"
   : > "$st/state/.subsuper-inject-wedged"
+  : > "$st/state/.subsuper-inject-wedged.identity"
   : > "$st/state/.wake-queue"          # durable queue must be untouched
   # Source fm-afk-start.sh inside a child bash (it sets `set -eu` and would
   # otherwise leak that into this test shell) and call the clear helper.
@@ -57,8 +60,11 @@ unit_clear_stale() {
     bash -c '. "$1"; fm_afk_clear_stale_artifacts "$2"' _ "$START" "$st/state"
   if [ ! -e "$st/state/.subsuper-escalations" ] \
      && [ ! -e "$st/state/.subsuper-escalations.since" ] \
-     && [ ! -e "$st/state/.subsuper-inject-wedged" ]; then
-    pass "clear-stale: removes escalations buffer, sidecar, and wedge marker"
+     && [ ! -e "$st/state/.subsuper-escalation-reserved" ] \
+     && [ ! -e "$st/state/.subsuper-escalation-offered" ] \
+     && [ ! -e "$st/state/.subsuper-inject-wedged" ] \
+     && [ ! -e "$st/state/.subsuper-inject-wedged.identity" ]; then
+    pass "clear-stale: removes prior-session delivery artifacts"
   else
     fail "clear-stale: stale artifacts survived"
   fi
@@ -127,7 +133,9 @@ unit_fresh_vs_refresh() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refresh.XXXXXX")
   mkdir -p "$st/state"
   : > "$st/state/.subsuper-escalations"
+  : > "$st/state/.subsuper-escalation-offered"
   : > "$st/state/.subsuper-inject-wedged"
+  : > "$st/state/.subsuper-inject-wedged.identity"
   # A live "daemon": a real process whose identity the lock records, so
   # daemon_lock_held_by_live_daemon returns true (a refresh).
   sleep 600 &
@@ -137,13 +145,60 @@ unit_fresh_vs_refresh() {
   printf '%s' "$sleep_pid" > "$lock/pid"
   ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$sleep_pid" > "$lock/pid-identity" 2>/dev/null ) || true
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$START" >/dev/null 2>&1
-  if [ -e "$st/state/.subsuper-escalations" ] && [ -e "$st/state/.subsuper-inject-wedged" ]; then
+  if [ -e "$st/state/.subsuper-escalations" ] \
+     && [ -e "$st/state/.subsuper-escalation-offered" ] \
+     && [ -e "$st/state/.subsuper-inject-wedged" ] \
+     && [ -e "$st/state/.subsuper-inject-wedged.identity" ]; then
     pass "refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)"
   else
     fail "refresh: incorrectly cleared the current session's buffered escalations"
   fi
   kill "$sleep_pid" 2>/dev/null || true
   wait "$sleep_pid" 2>/dev/null || true
+  rm -rf "$st"
+}
+
+unit_dead_daemon_restart_preserves_offer() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-restart.XXXXXX")
+  mkdir -p "$st/state"
+  date '+%s' > "$st/state/.afk"
+  printf 'pending restart\n' > "$st/state/.subsuper-escalations"
+  cp "$st/state/.subsuper-escalations" "$st/state/.subsuper-escalation-offered"
+  cp "$st/state/.subsuper-escalation-offered" "$st/state/.subsuper-inject-wedged.identity"
+  printf 'wedged\n' > "$st/state/.subsuper-inject-wedged"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
+    FM_SUPERVISOR_BACKEND=tmux bash -c '
+      . "$1"
+      fm_afk_launch_reconcile() { return 0; }
+      fm_afk_launch_create_tmux() { return 0; }
+      fm_afk_launch_start
+    ' _ "$LAUNCH" >/dev/null 2>&1
+  if [ "$(cat "$st/state/.subsuper-escalations" 2>/dev/null)" = "pending restart" ] \
+     && [ "$(cat "$st/state/.subsuper-escalation-offered" 2>/dev/null)" = "pending restart" ] \
+     && [ "$(cat "$st/state/.subsuper-inject-wedged.identity" 2>/dev/null)" = "pending restart" ]; then
+    pass "restart: same-session launcher recovery preserves the exact offer and buffer"
+  else
+    fail "restart: same-session launcher recovery discarded durable delivery state"
+  fi
+  rm -rf "$st"
+}
+
+unit_direct_entry_restart_preserves_offer() {
+  local st
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-direct-restart.XXXXXX")
+  mkdir -p "$st/state"
+  date '+%s' > "$st/state/.afk"
+  printf 'pending direct restart\n' > "$st/state/.subsuper-escalations"
+  cp "$st/state/.subsuper-escalations" "$st/state/.subsuper-escalation-offered"
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_BACKEND=unsupported \
+    "$START" >/dev/null 2>&1 || true
+  if [ "$(cat "$st/state/.subsuper-escalations" 2>/dev/null)" = "pending direct restart" ] \
+     && [ "$(cat "$st/state/.subsuper-escalation-offered" 2>/dev/null)" = "pending direct restart" ]; then
+    pass "restart: direct daemon entry preserves same-session offer and buffer"
+  else
+    fail "restart: direct daemon entry discarded same-session delivery state"
+  fi
   rm -rf "$st"
 }
 
@@ -216,13 +271,19 @@ unit_failed_start_rolls_back_state() {
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-failed-start.XXXXXX")
   mkdir -p "$st/state"
   printf 'pending\n' > "$st/state/.subsuper-escalations"
+  printf 'reserved\n' > "$st/state/.subsuper-escalation-reserved"
+  printf 'offered\n' > "$st/state/.subsuper-escalation-offered"
   printf 'wedged\n' > "$st/state/.subsuper-inject-wedged"
+  printf 'offered\n' > "$st/state/.subsuper-inject-wedged.identity"
   if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_SUPERVISOR_TARGET=unused \
     FM_SUPERVISOR_BACKEND=unsupported "$LAUNCH" start >/dev/null 2>&1; then
     fail "failed start: unsupported backend unexpectedly succeeded"
   elif [ ! -e "$st/state/.afk" ] \
     && [ "$(cat "$st/state/.subsuper-escalations")" = pending ] \
-    && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ]; then
+    && [ "$(cat "$st/state/.subsuper-escalation-reserved")" = reserved ] \
+    && [ "$(cat "$st/state/.subsuper-escalation-offered")" = offered ] \
+    && [ "$(cat "$st/state/.subsuper-inject-wedged")" = wedged ] \
+    && [ "$(cat "$st/state/.subsuper-inject-wedged.identity")" = offered ]; then
     pass "failed start: away flag and delivery artifacts roll back"
   else
     fail "failed start: left false away state or discarded delivery artifacts"
@@ -922,6 +983,8 @@ e2e_tmux() {
 unit_clear_stale
 unit_relative_paths_are_absolute_before_daemon_launch
 unit_fresh_vs_refresh
+unit_dead_daemon_restart_preserves_offer
+unit_direct_entry_restart_preserves_offer
 unit_stop_ordering
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state

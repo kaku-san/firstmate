@@ -7,10 +7,9 @@
 #   state/.supervise-daemon.lock, and:
 #     - prints "afk: daemon already running pid=<pid>" then exits 0 when that
 #       lock is held by a live daemon (a REFRESH: no stale-artifact clear);
-#     - otherwise clears any prior away session's stale escalation artifacts
-#       (fm_afk_clear_stale_artifacts) for a direct, non-prepared start, then
-#       execs bin/fm-supervise-daemon.sh in the foreground. A prepared start was
-#       already cleared transactionally by bin/fm-afk-launch.sh.
+#     - otherwise preserves delivery artifacts when state/.afk already proves a
+#       same-session recovery, or clears prior-session artifacts for a fresh
+#       direct start, then execs bin/fm-supervise-daemon.sh in the foreground.
 #
 # This file is sourceable: its BASH_SOURCE guard keeps main from running, while
 # exposing the daemon-lock helpers and fm_afk_clear_stale_artifacts. Sourcing it
@@ -63,7 +62,10 @@ fm_afk_clear_stale_artifacts() {  # <state-dir>
   local state=$1
   rm -f "$state/.subsuper-escalations" \
         "$state/.subsuper-escalations.since" \
-        "$state/.subsuper-inject-wedged" 2>/dev/null
+        "$state/.subsuper-escalation-reserved" \
+        "$state/.subsuper-escalation-offered" \
+        "$state/.subsuper-inject-wedged" \
+        "$state/.subsuper-inject-wedged.identity" 2>/dev/null
 }
 
 daemon_lock_owner() {
@@ -111,6 +113,7 @@ daemon_lock_held_by_live_daemon() {
 }
 
 fm_afk_start_main() {
+  local recovering=0
   case "${1:-}" in
     '' ) ;;
     -h|--help) fm_afk_start_usage; return 0 ;;
@@ -118,6 +121,7 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
+  [ -f "$FM_AFK_STATE/.afk" ] && recovering=1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
   else
@@ -137,7 +141,7 @@ fm_afk_start_main() {
 
   # Fresh start: clear the previous away session's stale delivery artifacts
   # before the new daemon can surface them (fix for the leaked-artifact defect).
-  if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ]; then
+  if [ "${FM_AFK_STATE_PREPARED:-0}" != 1 ] && [ "$recovering" -ne 1 ]; then
     fm_afk_clear_stale_artifacts "$FM_AFK_STATE"
   fi
 

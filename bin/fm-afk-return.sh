@@ -16,8 +16,9 @@
 #
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, draining, and blocker handling fails closed. It
-# retains the drained wake, buffered-escalation, and wedge-marker evidence until
-# every live open blocker is closed and `check` succeeds. Repeated begin/check
+# retains the drained wake, buffered-escalation, reserved or offered identity,
+# and wedge-marker evidence until every live open blocker is closed and `check` succeeds.
+# Repeated begin/check
 # calls are idempotent. `guard` never mutates state and is suitable for ordinary
 # read entrypoints such as fm-bearings-snapshot.sh.
 set -u
@@ -124,7 +125,10 @@ clear_delivery_artifacts() {
   rm -f \
     "$STATE/.subsuper-escalations" \
     "$STATE/.subsuper-escalations.since" \
-    "$STATE/.subsuper-inject-wedged"
+    "$STATE/.subsuper-escalation-reserved" \
+    "$STATE/.subsuper-escalation-offered" \
+    "$STATE/.subsuper-inject-wedged" \
+    "$STATE/.subsuper-inject-wedged.identity"
 }
 
 return_guard() {
@@ -141,7 +145,7 @@ return_guard() {
 }
 
 return_reconcile() {
-  local evidence blockers drained wedge escalations lifecycle_ok=1
+  local evidence blockers drained wedge escalations reserved offered lifecycle_ok=1
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
   preserve_evidence "$evidence"
@@ -167,6 +171,14 @@ return_reconcile() {
   if [ -s "$STATE/.subsuper-escalations" ]; then
     escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
     append_evidence escalation "$escalations" "$evidence"
+  fi
+  if [ -s "$STATE/.subsuper-escalation-offered" ]; then
+    offered=$(cat "$STATE/.subsuper-escalation-offered" 2>/dev/null || true)
+    append_evidence offered "$offered" "$evidence"
+  fi
+  if [ -s "$STATE/.subsuper-escalation-reserved" ]; then
+    reserved=$(cat "$STATE/.subsuper-escalation-reserved" 2>/dev/null || true)
+    append_evidence reserved "$reserved" "$evidence"
   fi
 
   scan_open_blockers > "$blockers"

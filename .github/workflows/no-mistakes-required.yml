@@ -47,6 +47,9 @@ jobs:
             echo
             echo "    $marker"
             echo
+            echo "If this PR already passed, restore the generated '## Pipeline' section;"
+            echo "later body edits must preserve it instead of replacing it with custom prose."
+            echo
             echo "See CONTRIBUTING.md for setup and the full workflow."
             echo
             echo "PR author: ${PR_AUTHOR}"

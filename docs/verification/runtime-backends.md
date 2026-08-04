@@ -424,14 +424,22 @@ Polling remained active and is covered as the fallback for capability, connect, 
 
 ### Away-mode transport
 
-The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:
+The Pi/Herdr ambiguous-ack away transport guard was run on 2026-08-04 with Herdr 0.7.5 and Pi 0.83.0:
 
 ```sh
-FM_AFK_PI_HERDR_E2E=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+FM_AFK_PI_HERDR_E2E=1 FM_AFK_PI_HERDR_AMBIGUOUS_ACK=1 \
+  HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
   tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Observed guarantees: pending composer input refused injection and raised one alert; idle Pi accepted one marked escalation; the return gate refused ordinary work while a live blocker remained; resolving the blocker allowed the return flow.
+Observed output:
+
+```text
+ok - real Pi/Herdr typed an ambiguously acknowledged escalation once and retained one recoverable offer
+```
+
+The guard uses a real isolated Pi primary, Herdr transport, and an in-process deterministic provider with no external request, holds the acknowledgement read at idle, makes the post-send composer read unavailable, and records the real literal send.
+The portable regressions cover pre-send crash reservation, restart and rollback recovery, authoritative retirement with later buffered lines, exact-identity bounded alerting, pending-input refusal, return catch-up, and no body retyping.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
 
 ## Zellij
