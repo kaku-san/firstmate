@@ -1164,6 +1164,7 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+# shellcheck disable=SC2016 # The brief marker must contain the literal variable reference.
 if [ "$KIND" != secondmate ] \
    && ! grep -Fq 'Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`' "$BRIEF"; then
   LOCAL_ENV_SECTION=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section) || {
