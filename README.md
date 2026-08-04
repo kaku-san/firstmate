@@ -39,6 +39,20 @@ An agent distro is a portable directory of instructions, skills, tooling, polici
 There is no app to install: the cloned repo is the distro - `AGENTS.md`, bundled firstmate skills, and helper scripts that any terminal coding agent can follow.
 Launching a supported harness inside it instantiates your first mate - and makes you the captain.
 
+## This fork
+
+[kaku-san/firstmate](https://github.com/kaku-san/firstmate) is a downstream fork of [kunchenguid/firstmate](https://github.com/kunchenguid/firstmate).
+It preserves upstream credit and Git history: [PR #3](https://github.com/kaku-san/firstmate/pull/3) merged the upstream tip available at that time with a true merge commit rather than flattening the ancestry.
+The fork exists to explore a parallel-first intake policy while keeping upstream's agent-distro foundation and safety boundaries.
+The fork-only policy was added in [PR #1](https://github.com/kaku-san/firstmate/pull/1), while [PR #2](https://github.com/kaku-san/firstmate/pull/2) and [PR #3](https://github.com/kaku-san/firstmate/pull/3) synchronize upstream changes rather than turning upstream features into fork inventions.
+Upstream continues independently, so the list below describes only fork-owned behavior present on this fork's default branch, not branch-only or planned work.
+
+- **Parallel-first intake** - At intake, and when long validation, infrastructure or platform work, an external wait, or a blocker appears, firstmate identifies independently valuable proof or delivery paths already authorized by the request or accepted criteria and dispatches them immediately when they can proceed independently.
+- **Narrower serialization** - The fork requires a named reason to serialize and clarifies that choosing among bounded paths for the same authorized outcome, or the existence of a longer integrated path, is not itself a dependency.
+- **Bounded authority** - Parallel decomposition is limited to independent outcomes rather than redundant planners, duplicate implementations, or competing approaches, and it never grants implementation authorization or expands `yolo` authority.
+
+The authoritative intake policy is documented in [AGENTS.md](AGENTS.md#intake-and-authority).
+
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.
@@ -78,7 +92,7 @@ Codex and OpenCode are also verified and supported as primary harnesses; Codex u
 
 ```sh
 gh auth login
-git clone https://github.com/kunchenguid/firstmate
+git clone https://github.com/kaku-san/firstmate
 cd firstmate
 ```
 
