@@ -134,7 +134,9 @@
 # The worker invokes the checker for presence-only credential/configuration
 # conclusions; no local environment value is copied, exported, or recorded.
 # Before endpoint creation, spawn adds the executable-owned boundary section to
-# a legacy ship/scout brief that does not already carry it.
+# a legacy ship/scout brief only through an atomic replacement of a non-symlink
+# regular single-linked brief.md inside the resolved task data directory.
+# An unsafe path or a brief that changes during the upgrade fails closed.
 # The path metadata is backend-neutral and is set in the task pane shell before
 # every supported harness launch.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
