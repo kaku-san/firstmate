@@ -611,10 +611,12 @@ fm_afk_launch_stop() {
   fi
   if [ -n "$pid" ] && fm_pid_alive "$pid"; then
     current_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
+      fm_afk_launch_log "diagnostic: away-mode daemon exceeded the 10-second SIGTERM wait and its identity is unreadable; preserving lifecycle state"
       fm_afk_launch_log "could not confirm away-mode daemon exit; preserving lifecycle state"
       return 1
     }
     if [ "$current_identity" = "$pid_identity" ]; then
+      fm_afk_launch_log "diagnostic: away-mode daemon exceeded the 10-second SIGTERM wait; inspect .supervise-daemon.log for bounded cleanup timing"
       fm_afk_launch_log "away-mode daemon did not exit after SIGTERM; preserving lifecycle state"
       return 1
     fi

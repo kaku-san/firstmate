@@ -234,8 +234,10 @@ _state_root() { printf '%s' "${FM_STATE_OVERRIDE:-$FM_HOME/state}"; }
 # --- portable stat (same trap as fm-watch.sh: no `stat -f || stat -c`) -------
 if [ "$(uname)" = Darwin ]; then
   _stat_file_mtime() { stat -f %m "$1" 2>/dev/null; }
+  _stat_file_signature() { stat -f '%z:%Fm' "$1" 2>/dev/null; }
 else
   _stat_file_mtime() { stat -c %Y "$1" 2>/dev/null; }
+  _stat_file_signature() { stat -c '%s:%Y' "$1" 2>/dev/null; }
 fi
 _now() { date +%s; }
 _file_age() {  # seconds since mtime; very large if missing
@@ -338,8 +340,106 @@ _collapse_newlines() {  # <text>
 # field for "self" is informational (logged); for "escalate" it is the pre-read
 # summary firstmate would otherwise have to re-read.
 
+result_seen_file() {  # <state> <task>
+  printf '%s/.subsuper-result-seen-%s' "$1" "$(_stale_key "$2")"
+}
+
+result_buffer_has_identity() {  # <state> <identity>
+  local state=$1 identity=$2
+  [ -s "$state/.subsuper-escalations" ] || return 1
+  awk -F '\t' -v id="$identity" '$1 == id { found=1 } END { exit !found }' \
+    "$state/.subsuper-escalations"
+}
+
+result_seen_has_identity() {  # <state> <task> <identity>
+  local state=$1 task=$2 identity=$3
+  grep -Fqx "$identity" "$(result_seen_file "$state" "$task")" 2>/dev/null
+}
+
+result_identity_known() {  # <state> <task> <identity>
+  result_seen_has_identity "$1" "$2" "$3" || result_buffer_has_identity "$1" "$3"
+}
+
+result_turn_identity() {  # <task> <turn-ended-path>
+  printf 'result-turn|%s|%s' "$1" "$(_stat_file_signature "$2")"
+}
+
+result_status_identity() {  # <task> <last-status> [turn-signature]
+  printf 'result-status|%s|%s|%s' "$1" "${3:-none}" "$(_hash_text "$2")"
+}
+
+result_status_is_historical() {  # <status-path> <turn-ended-path>
+  local status_mtime turn_mtime
+  status_mtime=$(_stat_file_mtime "$1" 2>/dev/null || true)
+  turn_mtime=$(_stat_file_mtime "$2" 2>/dev/null || true)
+  case "$status_mtime" in ''|*[!0-9]*) return 1 ;; esac
+  case "$turn_mtime" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$status_mtime" -le "$turn_mtime" ]
+}
+
+# Print one internal identity and one captain-facing item per new away result.
+# A historical status written before the turn-end marker enriches that marker's
+# result instead of creating a second result. A newer status transition remains
+# independently deliverable.
+away_signal_items() {  # <reason-paths> <state>
+  local reason=$1 state=$2 f task last statusf turnf identity item emitted=""
+  for f in $reason; do
+    case "$f" in
+      *.turn-ended)
+        [ -e "$f" ] || continue
+        task=$(basename "$f"); task=${task%.turn-ended}
+        turnf=$f
+        statusf="$state/$task.status"
+        identity=$(result_turn_identity "$task" "$turnf")
+        item="$(basename "$f"): completed turn"
+        if [ -e "$statusf" ]; then
+          last=$(last_status_line "$statusf")
+          if [ -n "$last" ] && status_is_captain_relevant "$last" \
+             && result_status_is_historical "$statusf" "$turnf"; then
+            item="$(basename "$statusf"): $last"
+          elif [ -n "$last" ] && status_is_captain_relevant "$last"; then
+            identity=$(result_status_identity "$task" "$last" "$(_stat_file_signature "$turnf")")
+            item="$(basename "$statusf"): $last"
+          fi
+        fi
+        case " $emitted " in *" $identity "*) continue ;; esac
+        emitted="$emitted $identity"
+        result_identity_known "$state" "$task" "$identity" || printf '%s\t%s\n' "$identity" "$item"
+        ;;
+      *.status)
+        [ -e "$f" ] || continue
+        last=$(last_status_line "$f")
+        [ -n "$last" ] || continue
+        status_is_captain_relevant "$last" || continue
+        task=$(basename "$f"); task=${task%.status}
+        turnf="$state/$task.turn-ended"
+        if [ -e "$turnf" ] && result_status_is_historical "$f" "$turnf"; then
+          identity=$(result_turn_identity "$task" "$turnf")
+        elif [ -e "$turnf" ]; then
+          identity=$(result_status_identity "$task" "$last" "$(_stat_file_signature "$turnf")")
+        else
+          identity=$(result_status_identity "$task" "$last")
+        fi
+        [ "$(cat "$state/.subsuper-seen-status-$(_stale_key "$task")" 2>/dev/null || true)" = "$last" ] \
+          && [ ! -e "$turnf" ] && continue
+        case " $emitted " in *" $identity "*) continue ;; esac
+        emitted="$emitted $identity"
+        result_identity_known "$state" "$task" "$identity" || printf '%s\t%s\n' "$identity" "$(basename "$f"): $last"
+        ;;
+    esac
+  done
+}
+
+away_signal_has_new() {  # <reason-paths> <state>
+  [ -n "$(away_signal_items "$1" "$2")" ]
+}
+
 classify_signal() {  # <reason-after-colon> <state>
   local reason=$1 state=$2 f last distilled="" rel="" all_seen=1 task seen
+  if afk_active "$state" && away_signal_has_new "$reason" "$state"; then
+    printf 'escalate|away result signal'
+    return
+  fi
   for f in $reason; do
     [ -e "$f" ] || continue
     last=$(last_status_line "$f")
@@ -437,6 +537,9 @@ classify_unknown() {  # <reason>
 #           attempt returned; it permits authoritative postcondition retirement.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
+# Logical result rows in the buffer use an internal identity<TAB>item form.
+# Confirmed sends and durable offers commit their result identities to
+# state/.subsuper-result-seen-<task>; uncommitted rows remain retryable.
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
@@ -644,6 +747,37 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+escalate_result_add() {  # <state> <identity> <distilled-item>
+  local state=$1 identity=$2 item=$3 buf task
+  task=${identity#*|}; task=${task%%|*}
+  result_identity_known "$state" "$task" "$identity" && return 0
+  buf="$state/.subsuper-escalations"
+  [ -s "$buf" ] || _now > "${buf}.since"
+  printf '%s\t%s\n' "$identity" "$item" >> "$buf"
+}
+
+escalation_result_commit_offer() {  # <state>
+  local state=$1 offer="$1/.subsuper-escalation-offered" id task seen
+  [ -s "$offer" ] || return 0
+  while IFS=$'\t' read -r id _item; do
+    case "$id" in result-turn\|*|result-status\|*|result-check\|*) ;;
+      *) continue ;;
+    esac
+    task=${id#*|}; task=${task%%|*}
+    seen=$(result_seen_file "$state" "$task")
+    grep -Fqx "$id" "$seen" 2>/dev/null || printf '%s\n' "$id" >> "$seen"
+  done < "$offer"
+}
+
+escalate_signal_results() {  # <state> <reason-paths>
+  local state=$1 reason=$2 identity item task
+  while IFS=$'\t' read -r identity item; do
+    [ -n "$identity" ] || continue
+    task=${identity#*|}; task=${task%%|*}
+    escalate_result_add "$state" "$identity" "$item"
+  done < <(away_signal_items "$reason" "$state")
+}
+
 escalation_offer_active() {  # <state>
   [ -e "$1/.subsuper-escalation-reserved" ] || [ -e "$1/.subsuper-escalation-offered" ]
 }
@@ -664,6 +798,7 @@ escalation_offer_observe() {  # <state>
   [ -s "$reserve" ] || return 1
   [ ! -e "$offer" ] || return 1
   mv "$reserve" "$offer"
+  escalation_result_commit_offer "$state" || return 1
 }
 
 # Retire only the exact offered prefix. Newer escalations appended while the
@@ -698,12 +833,14 @@ escalation_offer_reconcile() {  # <state>
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
   if [ "$native" = busy ] || { [ "$backend" = tmux ] && pane_is_busy "$target" "$backend"; }; then
     log "inject reconciled: authoritative turn started for offered escalation"
+    escalation_result_commit_offer "$state" || return 1
     escalation_offer_retire "$state"
     return $?
   fi
   composer=$(fm_backend_composer_state "$backend" "$target" 2>/dev/null || true)
   if [ "$composer" = empty ]; then
     log "inject reconciled: authoritative empty composer retired offered escalation"
+    escalation_result_commit_offer "$state" || return 1
     escalation_offer_retire "$state"
     return $?
   fi
@@ -725,7 +862,9 @@ escalate_flush() {  # <state>
   [ -s "$buf" ] || return 0
   n=$(wc -l < "$buf" 2>/dev/null || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
+  # Logical-result rows carry an internal identity before a tab; strip it from
+  # the captain-facing digest while retaining it for crash-safe deduplication.
+  msg=$(awk -F '\t' 'NR>1{printf " | "} {if (index($0,"\t")) printf "%s",$2; else printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
@@ -1329,7 +1468,7 @@ is_wake_reason() {  # <reason>
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state>
   local reason=$1 state=$2 decision action distilled task last stale_detail
-  local kind="" arg=""
+  local kind="" arg="" check_payload check_path check_output check_identity
   if should_force_self "$reason"; then
     log "wake force-self (FM_INJECT_SKIP): $reason"
     return
@@ -1344,7 +1483,7 @@ handle_wake() {  # <reason> <state>
                 idle\ *s,\ possible\ wedge,\ escalation\ *)
                   decision="escalate|${reason#stale: }" ;;
               esac ;;
-    check:*)  decision=$(classify_check "$reason") ;;
+    check:*)  kind=check; arg="${reason#check: }"; decision=$(classify_check "$reason") ;;
     heartbeat|heartbeat:*) decision=$(classify_heartbeat) ;;
     *)        decision=$(classify_unknown "$reason") ;;
   esac
@@ -1354,7 +1493,23 @@ handle_wake() {  # <reason> <state>
   case "$action" in
     escalate)
       log "escalate: $reason -> $distilled"
-      escalate_add "$state" "$distilled"
+      if [ "$kind" = signal ] && afk_active "$state"; then
+        escalate_signal_results "$state" "$arg"
+      elif [ "$kind" = check ]; then
+        check_payload=${reason#check: }
+        check_path=${check_payload%%: *}
+        check_output=${check_payload#"$check_path: "}
+        if [ ! -e "$check_path" ] && [[ "$check_output" = merged || "$check_output" = merged:* ]]; then
+          check_identity="result-check|$(_hash_text "$reason")"
+          escalate_result_add "$state" "$check_identity" \
+            "historical merged check (source already cleaned up): $check_path: $check_output"
+          log "historical check source absent: $check_path result=$check_output identity=$check_identity"
+        else
+          escalate_add "$state" "$distilled"
+        fi
+      else
+        escalate_add "$state" "$distilled"
+      fi
       # A terminal-stale escalate must not leave a persistence marker behind, or
       # housekeeping re-escalates the same pane as a false wedge later.
       [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
@@ -1542,18 +1697,22 @@ fm_super_main() {
   # --- shutdown: flush buffered escalations, reap child, release lock -------
   local WATCHER_PID="" CUR_TMP=""
   cleanup() {
+    local cleanup_started=$SECONDS flush_rc=0
     trap - TERM INT
+    log "shutdown cleanup begin: buffered=$(wc -l < "$STATE/.subsuper-escalations" 2>/dev/null || echo 0) reserved=$([ -e "$STATE/.subsuper-escalation-reserved" ] && echo 1 || echo 0) offered=$([ -e "$STATE/.subsuper-escalation-offered" ] && echo 1 || echo 0)"
     wedge_alarm_stop_active_notifier
-    escalate_flush "$STATE" 2>/dev/null || true
+    if escalate_flush "$STATE" 2>/dev/null; then :; else flush_rc=$?; fi
     if [ -n "${WATCHER_PID:-}" ]; then
       kill "$WATCHER_PID" 2>/dev/null || true
       wait "$WATCHER_PID" 2>/dev/null || true
+      WATCHER_PID=""
     fi
     if [ -n "${CUR_TMP:-}" ]; then
       rm -f "$CUR_TMP" 2>/dev/null || true
     fi
     fm_lock_release "$LOCK" 2>/dev/null || true
     rm -f "$PIDFILE" 2>/dev/null || true
+    log "shutdown cleanup complete: elapsed=$((SECONDS - cleanup_started))s flush_rc=$flush_rc watcher_reaped=$([ -z "${WATCHER_PID:-}" ] && echo 1 || echo 0)"
     log "daemon shutting down"
     exit 0
   }

@@ -244,6 +244,39 @@ unit_stop_ordering() {
   rm -rf "$st"
 }
 
+unit_stop_exceeding_wait_preserves_state() {
+  local st lock marker daemon_pid out rc
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-stop-timeout.XXXXXX")
+  mkdir -p "$st/state"
+  date '+%s' > "$st/state/.afk"
+  printf 'pending timeout result\n' > "$st/state/.subsuper-escalations"
+  cp "$st/state/.subsuper-escalations" "$st/state/.subsuper-escalation-offered"
+  marker="$st/term-seen-afk"
+  bash -c '
+    trap "[ -f \"$1/state/.afk\" ] && : > \"$2\"; sleep 11; exit 0" TERM
+    while :; do sleep 0.2; done
+  ' _ "$st" "$marker" &
+  daemon_pid=$!
+  lock="$st/state/.supervise-daemon.lock"
+  mkdir -p "$lock"
+  printf '%s' "$daemon_pid" > "$lock/pid"
+  ( . "$ROOT/bin/fm-wake-lib.sh"; fm_pid_identity "$daemon_pid" > "$lock/pid-identity" 2>/dev/null ) || true
+  printf 'none\t-\tnative\n' > "$st/state/.afk-daemon-terminal"
+  set +e
+  out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" "$LAUNCH" stop 2>&1)
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "stop timeout unexpectedly cleared lifecycle state"
+  [ -e "$st/state/.afk" ] || fail "stop timeout cleared .afk before the daemon exited"
+  [ -e "$st/state/.subsuper-escalation-offered" ] || fail "stop timeout discarded the offered escalation"
+  printf '%s\n' "$out" | grep -F 'exceeded the 10-second SIGTERM wait' >/dev/null \
+    || fail "stop timeout omitted its bounded diagnostic"
+  kill -KILL "$daemon_pid" 2>/dev/null || true
+  wait "$daemon_pid" 2>/dev/null || true
+  pass "stop timeout preserves away state and the offered result with a bounded diagnostic"
+  rm -rf "$st"
+}
+
 unit_stop_rejects_reused_pid() {
   local st lock sleeper_pid
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-pid-reuse.XXXXXX")
@@ -571,7 +604,7 @@ unit_native_entry_preserves_prepared_state() {
   : > "$st/state/.subsuper-escalations"
   FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_AFK_STATE_PREPARED=1 bash -c '
     . "$1"
-    FM_AFK_DAEMON=/bin/true
+    FM_AFK_DAEMON=$(command -v true)
     fm_afk_start_main
   ' _ "$START" >/dev/null 2>&1
   if [ -e "$st/state/.afk" ] && [ -e "$st/state/.subsuper-escalations" ]; then
@@ -986,6 +1019,7 @@ unit_fresh_vs_refresh
 unit_dead_daemon_restart_preserves_offer
 unit_direct_entry_restart_preserves_offer
 unit_stop_ordering
+unit_stop_exceeding_wait_preserves_state
 unit_stop_rejects_reused_pid
 unit_failed_start_rolls_back_state
 unit_concurrent_start_serialized
