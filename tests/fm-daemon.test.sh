@@ -157,8 +157,12 @@ test_afk_logical_result_path_growth_dedup() {
   ) || fail "confirmed path-growth result did not flush"
   [ "$(wc -l < "$state/.subsuper-result-seen-growth-r1" | tr -d ' ')" -eq 1 ] \
     || fail "confirmed path-growth result did not commit one logical-result identity"
+  touch -t 200001010002 "$turn"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "later turn marker re-emitted an unchanged historical terminal status"
   printf 'done: second actionable transition\n' > "$status"
-  touch -t 200001010002 "$status"
+  touch -t 200001010003 "$status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn $status" "$state"
   count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
   [ "$count" -eq 1 ] || fail "new actionable status transition was suppressed or duplicated ($count)"
@@ -175,6 +179,38 @@ test_afk_logical_result_path_growth_dedup() {
   [ "$(wc -l < "$state/.subsuper-result-seen-growth-r1" | tr -d ' ')" -eq 2 ] \
     || fail "new actionable transition did not commit a second logical-result identity"
   pass "away logical result identity dedupes path growth and exact repeats while preserving a new transition"
+}
+
+test_afk_result_dedupes_heartbeat_orderings() {
+  local dir state turn status count
+  dir=$(make_supercase afk-result-turn-before-heartbeat)
+  state="$dir/state"
+  turn="$state/order-r1.turn-ended"
+  status="$state/order-r1.status"
+  afk_enter "$state"
+  printf 'done: turn first\n' > "$status"
+  : > "$turn"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "heartbeat duplicated a status buffered by a turn-only wake ($count)"
+
+  dir=$(make_supercase afk-result-heartbeat-before-turn)
+  state="$dir/state"
+  turn="$state/order-r2.turn-ended"
+  status="$state/order-r2.status"
+  afk_enter "$state"
+  printf 'done: heartbeat first\n' > "$status"
+  : > "$turn"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "turn-only wake duplicated a status buffered by heartbeat ($count)"
+  pass "away result deduplication is stable across heartbeat and turn wake ordering"
 }
 
 test_afk_historical_check_is_bounded_and_deduped() {
@@ -2006,6 +2042,7 @@ test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
 test_afk_logical_result_path_growth_dedup
+test_afk_result_dedupes_heartbeat_orderings
 test_afk_historical_check_is_bounded_and_deduped
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping

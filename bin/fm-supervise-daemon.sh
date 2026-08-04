@@ -364,23 +364,13 @@ result_turn_identity() {  # <task> <turn-ended-path>
   printf 'result-turn|%s|%s' "$1" "$(_stat_file_signature "$2")"
 }
 
-result_status_identity() {  # <task> <last-status> [turn-signature]
-  printf 'result-status|%s|%s|%s' "$1" "${3:-none}" "$(_hash_text "$2")"
-}
-
-result_status_is_historical() {  # <status-path> <turn-ended-path>
-  local status_mtime turn_mtime
-  status_mtime=$(_stat_file_mtime "$1" 2>/dev/null || true)
-  turn_mtime=$(_stat_file_mtime "$2" 2>/dev/null || true)
-  case "$status_mtime" in ''|*[!0-9]*) return 1 ;; esac
-  case "$turn_mtime" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$status_mtime" -le "$turn_mtime" ]
+result_status_identity() {  # <task> <status-path> <last-status>
+  printf 'result-status|%s|%s|%s' "$1" "$(_stat_file_signature "$2")" "$(_hash_text "$3")"
 }
 
 # Print one internal identity and one captain-facing item per new away result.
-# A historical status written before the turn-end marker enriches that marker's
-# result instead of creating a second result. A newer status transition remains
-# independently deliverable.
+# A relevant status identifies the result independently of whichever wake path
+# observed it. Only a turn end without a relevant status uses the turn marker.
 away_signal_items() {  # <reason-paths> <state>
   local reason=$1 state=$2 f task last statusf turnf identity item emitted=""
   for f in $reason; do
@@ -394,11 +384,8 @@ away_signal_items() {  # <reason-paths> <state>
         item="$(basename "$f"): completed turn"
         if [ -e "$statusf" ]; then
           last=$(last_status_line "$statusf")
-          if [ -n "$last" ] && status_is_captain_relevant "$last" \
-             && result_status_is_historical "$statusf" "$turnf"; then
-            item="$(basename "$statusf"): $last"
-          elif [ -n "$last" ] && status_is_captain_relevant "$last"; then
-            identity=$(result_status_identity "$task" "$last" "$(_stat_file_signature "$turnf")")
+          if [ -n "$last" ] && status_is_captain_relevant "$last"; then
+            identity=$(result_status_identity "$task" "$statusf" "$last")
             item="$(basename "$statusf"): $last"
           fi
         fi
@@ -413,13 +400,7 @@ away_signal_items() {  # <reason-paths> <state>
         status_is_captain_relevant "$last" || continue
         task=$(basename "$f"); task=${task%.status}
         turnf="$state/$task.turn-ended"
-        if [ -e "$turnf" ] && result_status_is_historical "$f" "$turnf"; then
-          identity=$(result_turn_identity "$task" "$turnf")
-        elif [ -e "$turnf" ]; then
-          identity=$(result_status_identity "$task" "$last" "$(_stat_file_signature "$turnf")")
-        else
-          identity=$(result_status_identity "$task" "$last")
-        fi
+        identity=$(result_status_identity "$task" "$f" "$last")
         [ "$(cat "$state/.subsuper-seen-status-$(_stale_key "$task")" 2>/dev/null || true)" = "$last" ] \
           && [ ! -e "$turnf" ] && continue
         case " $emitted " in *" $identity "*) continue ;; esac
@@ -1320,7 +1301,7 @@ housekeeping() {  # <state>
       [ -n "$f" ] || continue
       seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
       [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ] && continue
-      escalate_add "$state" "$(basename "$f"): $last (catch-all scan)"
+      escalate_signal_results "$state" "$f"
       mark_status_seen "$state" "$task" "$last"
     done < <(scan_captain_relevant_statuses "$state")
   fi
