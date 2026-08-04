@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Presence-only lookup for a project's supported local configuration.
 # Usage: fm-project-local-env.sh check <KEY> [<KEY>...]
+#        fm-project-local-env.sh brief-section
 #        fm-project-local-env.sh --help
 #
 # The spawn boundary supplies FM_PRIMARY_PROJECT_DIR for the registered primary
@@ -27,8 +28,24 @@ error() {
   printf 'fm-project-local-env: error: %s\n' "$*" >&2
 }
 
+brief_section() {
+  cat <<'EOF'
+# Project-local configuration boundary
+For project-local credential or configuration checks, the spawn exposes `FM_PROJECT_LOCAL_ENV_CHECK`, `FM_PRIMARY_PROJECT_DIR`, `FM_PROJECT_LOCAL_ENV_ISOLATED_DIR`, and `FM_PROJECT_LOCAL_ENV_FILE` as path-only task-boundary metadata.
+Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]` and follow its presence-only result.
+The helper checks the process environment, the isolated copy's supported `.env.local`, and the registered primary project's supported `.env.local` without printing or exporting values.
+An exit status of 2 means the task-boundary configuration is unsafe or indeterminate, not that the credential is absent.
+Read the helper's `--help` before using it, and never source or copy the local environment file.
+EOF
+}
+
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
+  brief-section)
+    [ "$#" -eq 1 ] || { error 'brief-section accepts no arguments'; exit 2; }
+    brief_section
+    exit 0
+    ;;
   check) shift ;;
   *) error 'usage: fm-project-local-env.sh check <KEY> [<KEY>...]'; exit 2 ;;
 esac
@@ -78,7 +95,11 @@ PRIMARY_DIR=${FM_PRIMARY_PROJECT_DIR:-}
 }
 PRIMARY_DIR=$(canonical_dir FM_PRIMARY_PROJECT_DIR "$PRIMARY_DIR") || exit 2
 
-ISOLATED_DIR=${FM_PROJECT_LOCAL_ENV_ISOLATED_DIR:-$PWD}
+ISOLATED_DIR=${FM_PROJECT_LOCAL_ENV_ISOLATED_DIR:-}
+[ -n "$ISOLATED_DIR" ] || {
+  error 'FM_PROJECT_LOCAL_ENV_ISOLATED_DIR is required at the task boundary'
+  exit 2
+}
 ISOLATED_DIR=$(canonical_dir FM_PROJECT_LOCAL_ENV_ISOLATED_DIR "$ISOLATED_DIR") || exit 2
 
 validate_optional_env_file() {

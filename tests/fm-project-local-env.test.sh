@@ -138,6 +138,17 @@ test_unsafe_boundary_stops_safely() {
   cp -R "$primary" "$isolated"
   write_dummy_env "$primary"
 
+  out=$(
+    unset FM_PROJECT_LOCAL_ENV_ISOLATED_DIR
+    FM_PRIMARY_PROJECT_DIR="$primary" "$CHECK" check PARALLEL_API_KEY 2>&1
+  )
+  status=$?
+  expect_code 2 "$status" "a missing isolated-directory boundary should stop safely"
+  assert_contains "$out" 'FM_PROJECT_LOCAL_ENV_ISOLATED_DIR is required at the task boundary' \
+    "missing isolated-directory metadata did not explain the boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: absent' \
+    "missing isolated-directory metadata was mistaken for credential absence"
+
   unsafe="$case_dir/primary-link"
   ln -s "$primary" "$unsafe"
   out=$(FM_PRIMARY_PROJECT_DIR="$unsafe" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
@@ -233,7 +244,7 @@ test_spawn_worker_resolves_primary_local_presence() {
   fm_git_worktree "$primary" "$isolated" spawn-boundary
   isolated_real=$(cd "$isolated" && pwd -P)
   write_dummy_env "$primary"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
   fakebin=$(write_spawn_fakebin "$case_dir/fake")
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
@@ -255,6 +266,11 @@ test_spawn_worker_resolves_primary_local_presence() {
     "spawn did not expose the isolated project path"
   assert_contains "$launch" 'FM_PROJECT_LOCAL_ENV_FILE=.env.local' \
     "spawn did not expose the supported local source name"
+  assert_grep '# Project-local configuration boundary' "$home/data/$id/brief.md" \
+    "spawn did not add the executable-owned boundary to the legacy brief"
+  assert_grep 'Before concluding that a named credential or configuration is absent' \
+    "$home/data/$id/brief.md" \
+    "spawn did not enforce the presence-only check in the legacy brief"
   worker_out=$(cat "$worker_log")
   expect_code 0 "$(cat "$worker_status")" \
     "the isolated fake harness should resolve primary-local provider presence"
@@ -278,6 +294,8 @@ test_spawn_worker_resolves_primary_local_presence() {
     "the worker checker inspected or propagated an unrelated local secret"
   assert_no_grep 'dummy-' "$home/state/$id.meta" \
     "spawn metadata retained a local value"
+  assert_no_grep 'dummy-' "$home/data/$id/brief.md" \
+    "the legacy brief upgrade retained a local value"
   pass "isolated worker resolves primary-local presence through path-only metadata"
 }
 

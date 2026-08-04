@@ -133,6 +133,8 @@
 # FM_PROJECT_LOCAL_ENV_ISOLATED_DIR, and FM_PROJECT_LOCAL_ENV_FILE=.env.local.
 # The worker invokes the checker for presence-only credential/configuration
 # conclusions; no local environment value is copied, exported, or recorded.
+# Before endpoint creation, spawn adds the executable-owned boundary section to
+# a legacy ship/scout brief that does not already carry it.
 # The path metadata is backend-neutral and is set in the task pane shell before
 # every supported harness launch.
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
@@ -1162,6 +1164,17 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+if [ "$KIND" != secondmate ] \
+   && ! grep -Fq 'Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`' "$BRIEF"; then
+  LOCAL_ENV_SECTION=$("$FM_ROOT/bin/fm-project-local-env.sh" brief-section) || {
+    echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
+    exit 1
+  }
+  printf '\n%s\n' "$LOCAL_ENV_SECTION" >> "$BRIEF" || {
+    echo "error: could not add the project-local configuration boundary to $BRIEF" >&2
+    exit 1
+  }
+fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
