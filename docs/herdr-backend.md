@@ -258,7 +258,7 @@ There is still one watcher process; the event reader is a bounded child of that 
 The away daemon supports tmux and Herdr supervisor panes only.
 It refuses Zellij, Orca, and cmux as supervisor backends rather than applying the wrong transport.
 For Herdr, target existence, native state, capture, composer state, and verified submit all route through the shared backend dispatcher and the explicit named-session CLI owner.
-An ambiguous away submit keeps the exact offered body durable and never retypes it automatically; the shared away contract in the `/afk` skill owns reconciliation and return catch-up.
+An away submit reserves its exact body before transport, promotes it only after the attempt returns, and never retypes either unresolved phase automatically; the shared away contract in the `/afk` skill owns reconciliation, identity-bound wedge alerting, and return catch-up.
 The pane-independent max-defer alert is configured in [`wedge-alarm.md`](wedge-alarm.md).
 
 Harnesses with native tracked background execution can run the daemon in their terminal.

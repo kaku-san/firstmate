@@ -439,7 +439,7 @@ ok - real Pi/Herdr typed an ambiguously acknowledged escalation once and retaine
 ```
 
 The guard uses a real isolated Pi primary and Herdr transport, forces only the acknowledgement read to remain idle, records the real literal send, and makes no provider request.
-The portable regressions cover authoritative retirement, pending-input refusal, return catch-up, and no body retyping.
+The portable regressions cover pre-send crash reservation, restart and rollback recovery, authoritative retirement with later buffered lines, exact-identity bounded alerting, pending-input refusal, return catch-up, and no body retyping.
 The dedicated Herdr daemon workspace topology is covered by `tests/fm-afk-launch.test.sh` and preserves the captain tab's pane count.
 
 ## Zellij

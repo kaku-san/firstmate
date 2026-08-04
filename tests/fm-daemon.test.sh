@@ -660,12 +660,37 @@ test_ambiguous_offer_is_not_retyped_and_reconciles() {
       fail "ambiguous offer was re-flushed instead of awaiting reconciliation"
     fi
     [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || fail "ambiguous offer retyped the body on the next housekeeping flush"
-    FM_TEST_NATIVE=busy escalate_flush "$state" || fail "authoritative Herdr turn did not retire the offer"
+    escalate_add "$state" "delivery: done: later result"
+    FM_TEST_NATIVE=busy escalate_flush "$state" && fail "later buffered content unexpectedly flushed into a busy turn"
     [ "$(wc -l < "$count" | tr -d ' ')" -eq 1 ] || fail "reconciliation typed the body a second time"
     [ ! -e "$state/.subsuper-escalation-offered" ] || fail "retired offer marker remained"
-    [ ! -s "$state/.subsuper-escalations" ] || fail "retired offer left its exact buffered lines"
+    [ "$(cat "$state/.subsuper-escalations")" = "delivery: done: later result" ] || fail "authoritative retirement did not preserve later buffered lines"
   ) || fail "ambiguous offer reconciliation failed"
-  pass "ambiguous submit is typed once, remains recoverable, and retires on an authoritative turn"
+  pass "ambiguous submit is typed once and authoritative retirement preserves later buffered lines"
+}
+
+test_crash_reservation_is_not_retyped_or_empty_retired() {
+  local dir state count
+  dir=$(make_supercase reserved-offer)
+  state="$dir/state"
+  count="$dir/body-count"
+  : > "$count"
+  afk_enter "$state"
+  escalate_add "$state" "research: needs-decision: choose crash path"
+  escalation_offer_reserve "$state" || fail "could not seed pre-send crash reservation"
+  (
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=default:w1:p2
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$count"; printf 'empty'; }
+    escalate_flush "$state" && fail "unobserved send reservation was retired from an empty composer"
+    [ ! -s "$count" ] || fail "recovered reservation retyped the escalation body"
+    [ -s "$state/.subsuper-escalation-reserved" ] || fail "recovered reservation lost its protected identity"
+    [ -s "$state/.subsuper-escalations" ] || fail "recovered reservation lost its buffered escalation"
+  ) || fail "pre-send crash reservation recovery failed"
+  pass "pre-send crash reservation remains recoverable without body retyping"
 }
 
 test_genuinely_pending_composer_never_creates_offer() {
@@ -684,6 +709,7 @@ test_genuinely_pending_composer_never_creates_offer() {
     fm_backend_send_text_submit() { printf '%s\n' "$3" >> "$count"; printf 'empty'; }
     escalate_flush "$state" && fail "genuinely pending composer was treated as injectable"
     [ ! -s "$count" ] || fail "pending composer caused a body send"
+    [ ! -e "$state/.subsuper-escalation-reserved" ] || fail "pending composer created a false reservation"
     [ ! -e "$state/.subsuper-escalation-offered" ] || fail "pending composer created a false offered identity"
     [ -s "$state/.subsuper-escalations" ] || fail "pending composer lost the recoverable escalation"
   ) || fail "genuinely pending composer safety failed"
@@ -1602,6 +1628,26 @@ test_inject_wedge_alarm_fires_active_alert_on_non_tmux_backend() {
   pass "inject_wedge_alarm writes the marker AND emits the active alert even with no tmux status-line (herdr backend)"
 }
 
+test_offer_wedge_alarm_fires_once_per_exact_identity() {
+  local dir state log marker
+  dir=$(make_wedge_case wedge-offer-identity); state="$dir/state"; log="$dir/alert.log"
+  marker="$state/.subsuper-inject-wedged"
+  printf 'needs-decision: exact offer\n' > "$state/.subsuper-escalations"
+  cp "$state/.subsuper-escalations" "$state/.subsuper-escalation-offered"
+  (
+    export FM_WEDGE_ALARM_LOG="$log"
+    FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=herdr FM_WEDGE_ALARM_CHANNEL=osascript
+    WEDGE_ALARM_LAST_EPOCH=0
+    inject_wedge_alarm "$state" 600
+    touch -t 200001010000 "$marker"
+    WEDGE_ALARM_LAST_EPOCH=0
+    inject_wedge_alarm "$state" 1200
+  )
+  [ "$(wc -l < "$log" | tr -d ' ')" -eq 1 ] || fail "one unresolved offered identity emitted more than one active wedge alert"
+  cmp -s "$state/.subsuper-escalation-offered" "$marker.identity" || fail "wedge alarm identity was not bound to the exact offer"
+  pass "one unresolved offered identity emits one bounded active wedge alert"
+}
+
 test_inject_wedge_alarm_throttles_when_marker_cannot_be_written() {
   local dir state log daemon_log alerts errors
   dir=$(make_wedge_case wedge-unwritable-marker)
@@ -1918,6 +1964,7 @@ test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
 test_ambiguous_offer_is_not_retyped_and_reconciles
+test_crash_reservation_is_not_retyped_or_empty_retired
 test_genuinely_pending_composer_never_creates_offer
 test_heartbeat_scan_dedup
 test_handle_wake_routes_self_and_escalate
@@ -1972,6 +2019,7 @@ test_wedge_alarm_backgrounded_command_times_out_and_reaps_descendant
 test_wedge_alarm_hung_override_times_out_and_falls_through
 test_wedge_alarm_shutdown_stops_active_notifier_group
 test_inject_wedge_alarm_fires_active_alert_on_non_tmux_backend
+test_offer_wedge_alarm_fires_once_per_exact_identity
 test_inject_wedge_alarm_throttles_when_marker_cannot_be_written
 test_fm_send_exits_nonzero_on_confirmed_swallow
 test_fm_send_exits_nonzero_on_initial_send_failure

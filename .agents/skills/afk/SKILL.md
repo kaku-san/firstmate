@@ -122,12 +122,15 @@ herdr - both literal, non-submitting sends), then submitted with Enter and
 **verified** through the selected backend's submit primitive.
 Enter is retried (Enter only, never a retype) until the backend confirms the
 submit landed.
-After literal typing begins, the daemon records the exact offered escalation
-identity in `state/.subsuper-escalation-offered` and never automatically types
-that body again when acknowledgement is ambiguous.
-A later authoritative turn-start or empty-composer observation retires that exact
-offer, while the buffered lines remain durable for return catch-up and the
-bounded wedge alarm when no postcondition can be observed.
+Immediately before the send attempt, the daemon copies the exact buffered prefix
+to `state/.subsuper-escalation-reserved` and never automatically types that body
+again if the process stops before the attempt returns.
+After the send attempt returns, it promotes the reservation to
+`state/.subsuper-escalation-offered`.
+Only that observed-attempt phase may retire on a later authoritative turn-start
+or empty-composer observation.
+Both phases keep the buffered lines durable for return catch-up and bind at most
+one active wedge alert to the exact protected prefix.
 For tmux that confirmation is a cleared composer, using the same corrected,
 border-aware detector as the composer guard.
 For herdr, normal idle-baseline submits are confirmed by native agent-state showing a real turn started; the ANSI-aware composer classifier remains the affirmative-empty pre-injection guard and conservative fallback for non-idle or unreadable baselines.
@@ -209,9 +212,12 @@ the operational prefix lets firstmate distinguish it from a real captain message
   on tmux, `pane send-text` on herdr), then submitted with Enter and verified.
   Enter is retried, Enter only and never a retype, until the backend submit
   primitive reports `empty` as its caller-facing success verdict.
-  Once typing starts, the exact offered escalation identity is durable and an
-  ambiguous verdict blocks automatic body retyping until a read-only
-  authoritative postcondition retires it or return catch-up surfaces it.
+  Before the send attempt starts, its exact buffered prefix becomes a durable
+  reservation that blocks automatic body retyping across a process stop.
+  A returned attempt promotes that reservation to an offer, and only this
+  observed-attempt phase permits read-only authoritative retirement.
+  Return catch-up surfaces either phase, and one unresolved identity emits at
+  most one active wedge alert.
   For tmux that verdict means the shared-ghost-aware and border-aware composer
   cleared.
   For herdr's normal idle-baseline path it means native agent-state observed a real turn start; herdr uses the ANSI-aware structural classifier for the pre-injection composer guard and fallback paths.
@@ -241,8 +247,9 @@ the operational prefix lets firstmate distinguish it from a real captain message
 ## Stale-artifact lifecycle
 
 Treat `state/.subsuper-escalations`, its `.since` sidecar,
-`state/.subsuper-escalation-offered`, and `state/.subsuper-inject-wedged` as
-session-scoped delivery artifacts, not as the durable work record.
+`state/.subsuper-escalation-reserved`, `state/.subsuper-escalation-offered`,
+`state/.subsuper-inject-wedged`, and its `.identity` sidecar as session-scoped
+delivery artifacts, not as the durable work record.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
 Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.

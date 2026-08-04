@@ -116,11 +116,25 @@ test_return_gate_orders_catchup_before_bearings() {
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
   [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
   [ ! -e "$dir/home/state/.subsuper-escalation-offered" ] || fail "successful check left the ambiguous offered identity behind"
+  [ ! -e "$dir/home/state/.subsuper-escalation-reserved" ] || fail "successful check left the crash reservation behind"
   [ ! -e "$dir/home/state/.subsuper-inject-wedged" ] || fail "successful check left the wedge marker behind"
 
   out=$(run_return "$dir" check) || fail "an already-clear repeated check should be idempotent: $out"
   [ ! -e "$gate" ] || fail "idempotent clear check recreated a gate"
   pass "return catch-up precedes Bearings, owns live blocker remediation, preserves evidence once, and clears idempotently"
+}
+
+test_return_surfaces_crash_reservation() {
+  local dir out
+  dir="$TMP_ROOT/reserved-return"
+  install_runner "$dir"
+  date +%s > "$dir/home/state/.afk"
+  printf 'reserved captain escalation\n' > "$dir/home/state/.subsuper-escalations"
+  cp "$dir/home/state/.subsuper-escalations" "$dir/home/state/.subsuper-escalation-reserved"
+  out=$(run_return "$dir" begin) || fail "crash reservation return catch-up failed: $out"
+  assert_contains "$out" 'catch-up reserved: reserved captain escalation' "return catch-up did not surface the crash reservation"
+  [ ! -e "$dir/home/state/.subsuper-escalation-reserved" ] || fail "clear return left the surfaced crash reservation behind"
+  pass "return catch-up surfaces and clears a recovered crash reservation"
 }
 
 test_explicit_reclassification_requires_durable_reason() {
@@ -213,6 +227,7 @@ test_check_retries_recorded_terminal_teardown() {
 }
 
 test_return_gate_orders_catchup_before_bearings
+test_return_surfaces_crash_reservation
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_away_reentry_refuses_pending_return_gate
