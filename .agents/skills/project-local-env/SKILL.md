@@ -20,7 +20,7 @@ Run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]` for the names require
 The command checks the process environment, the isolated copy's supported `.env.local`, and the registered primary project's supported `.env.local` without printing or exporting values.
 Exit 0 means every requested name is non-empty in an allowed source.
 Exit 1 means at least one requested name is absent from every allowed source.
-Exit 2 means the task boundary is incomplete, malformed, or unsafe and is indeterminate, never proof of absence.
+Exit 2 means the task boundary is incomplete, malformed, or unsafe, including a non-regular source or a source path that changes during the lookup, and is indeterminate, never proof of absence.
 
 Do not source, copy, parse into a report, or add any local environment value to a brief, status line, metadata record, log, evidence bundle, commit, or public response.
 Do not add another environment filename or propagate a value without an explicit contract change and least-privilege review.
