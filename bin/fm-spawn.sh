@@ -1215,11 +1215,10 @@ upgrade_legacy_brief() {
     echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
     return 1
   }
-  if perl -MFcntl=:DEFAULT -MCwd=getcwd -MIO::Handle -e '
+  if perl -MFcntl=:DEFAULT -MIO::Handle -e '
     my ($directory, $want_dev, $want_ino, $name, $section) = @ARGV;
     exit 6 if -l $directory;
     chdir($directory) or exit 3;
-    exit 3 unless getcwd() eq $directory;
     my @pinned_stat = stat(".") or exit 6;
     exit 6 unless $pinned_stat[0] == $want_dev && $pinned_stat[1] == $want_ino;
     sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 3;
