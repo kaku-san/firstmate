@@ -739,6 +739,43 @@ test_brief_publication_refuses_special_and_existing_paths() {
   pass "fm-brief.sh: publication refuses existing/symlink/special paths and never leaves staging"
 }
 
+test_brief_publication_refuses_raced_final_path() {
+  local home id hookdir out status brief
+  home="$TMP_ROOT/publication-raced-final-home"
+  id='brief-pub-raced-final'
+  hookdir="$home/perl-hook"
+  brief="$home/data/$id/brief.md"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_raced_final.pm" <<'PERL'
+package fm_test_raced_final;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    open my $raced, '>', $destination or die "open $destination: $!\n";
+    print {$raced} "concurrent brief\n" or die "write $destination: $!\n";
+    close $raced or die "close $destination: $!\n";
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_raced_final \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a concurrently created brief must be refused"
+  assert_contains "$out" 'already exists' "raced brief refusal lost its message"
+  [ "$(cat "$brief")" = 'concurrent brief' ] || fail "the raced brief was overwritten"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "raced brief refusal left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication preserves a concurrently created brief"
+}
+
 test_brief_publication_refuses_swapped_directory() {
   local home id outside fakebin real_perl out status
   home="$TMP_ROOT/publication-directory-swap-home"
@@ -851,6 +888,7 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_brief_publication_refuses_special_and_existing_paths
+test_brief_publication_refuses_raced_final_path
 test_brief_publication_refuses_swapped_directory
 test_brief_publication_refuses_swapped_data_directory
 test_scout_and_secondmate_scaffold

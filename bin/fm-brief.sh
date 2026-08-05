@@ -55,11 +55,10 @@
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
 # Refuses to overwrite an existing brief. Publication stages the brief in a
-# private same-directory file and renames it into place, so a hostile same-user
-# path swap can never turn the write into a write-through: the rename replaces
-# whatever sits at the brief path instead of following it, and any pre-existing
-# path (regular file, symlink, or special file such as a FIFO) is refused
-# before anything is opened.
+# private same-directory file and links it into place without replacement, so a
+# hostile same-user path swap can never turn the write into a write-through or
+# overwrite a pre-existing path (regular file, symlink, or special file such as
+# a FIFO) before anything is opened.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -173,10 +172,7 @@ fi
 
 BRIEF="$DATA/$ID/brief.md"
 
-# Publish through a private same-directory staging file and an atomic rename.
-# The final rename replaces whatever a same-user adversary swapped in at the
-# brief path rather than writing through it, and the refusal re-check keeps the
-# no-overwrite contract across the staging window.
+# Publish through a private same-directory staging file and an atomic no-replace link.
 publish_brief() {
   local status
   if perl -MFcntl=:DEFAULT -MIO::Handle -e '
@@ -216,9 +212,8 @@ publish_brief() {
     }
     $output->sync or exit 4;
     close($output) or exit 4;
-    exit 3 if lstat($name);
-    exit 4 unless $!{ENOENT};
-    rename($temporary, $name) or exit 4;
+    link($temporary, $name) or exit($!{EEXIST} ? 3 : 4);
+    unlink($temporary) or exit 4;
     undef $temporary;
   ' "$DATA" "$ID" brief.md; then
     return 0
