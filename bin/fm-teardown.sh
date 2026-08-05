@@ -1304,36 +1304,48 @@ $dir_pids"
 reap_task_backend_process_group() {  # <label>
   local label=$1 leader leader_start pgid current_pgid own_pgid
   if [ "$BACKEND" != tmux ]; then
-    echo "warning: lsof is unavailable; cannot resolve a process-group fallback for $BACKEND task $ID" >&2
-    return 0
+    echo "REFUSED: lsof is unavailable; no verified process cleanup fallback exists for $BACKEND task $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
   fi
   leader=$(tmux display-message -p -t "$T" '#{pane_pid}' 2>/dev/null) || leader=""
   case "$leader" in ''|*[!0-9]*)
-    echo "warning: lsof is unavailable; cannot resolve the tmux pane process group for $ID" >&2
-    return 0
+    echo "REFUSED: lsof is unavailable; cannot resolve the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
     ;;
   esac
   leader_start=$(task_process_identity "$leader") || {
-    echo "warning: lsof is unavailable; cannot identify the tmux pane process group for $ID" >&2
-    return 0
+    echo "REFUSED: lsof is unavailable; cannot identify the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
   }
   pgid=$(ps -o pgid= -p "$leader" 2>/dev/null) || pgid=""
   pgid=$(printf '%s' "$pgid" | tr -d '[:space:]')
   case "$pgid" in ''|*[!0-9]*|0|1)
-    echo "warning: lsof is unavailable; cannot resolve the tmux pane process group for $ID" >&2
-    return 0
+    echo "REFUSED: lsof is unavailable; cannot resolve the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
     ;;
   esac
   own_pgid=$(ps -o pgid= -p "$$" 2>/dev/null) || own_pgid=""
   own_pgid=$(printf '%s' "$own_pgid" | tr -d '[:space:]')
   if [ "$pgid" = "$own_pgid" ]; then
-    echo "warning: lsof is unavailable; refusing to signal teardown's own process group for $ID" >&2
+    echo "REFUSED: lsof is unavailable; refusing to signal teardown's own process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
+  fi
+  if ! task_process_identity_matches "$leader" "$leader_start"; then
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+      echo "REFUSED: lsof is unavailable; the tmux process group for $ID changed before cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
+      return 1
+    fi
     return 0
   fi
-  task_process_identity_matches "$leader" "$leader_start" || return 0
   current_pgid=$(ps -o pgid= -p "$leader" 2>/dev/null) || current_pgid=""
   current_pgid=$(printf '%s' "$current_pgid" | tr -d '[:space:]')
-  [ "$current_pgid" = "$pgid" ] || return 0
+  if [ "$current_pgid" != "$pgid" ]; then
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+      echo "REFUSED: lsof is unavailable; the tmux process group for $ID changed before cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
+      return 1
+    fi
+    return 0
+  fi
   echo "teardown: reaping leaked $label process group for $ID: $pgid" >&2
   kill -TERM -- "-$pgid" 2>/dev/null || true
   sleep 1
@@ -1342,6 +1354,10 @@ reap_task_backend_process_group() {  # <label>
      && kill -0 -- "-$pgid" 2>/dev/null; then
     echo "teardown: force-killing leaked $label process group for $ID: $pgid" >&2
     kill -KILL -- "-$pgid" 2>/dev/null || true
+  fi
+  if kill -0 -- "-$pgid" 2>/dev/null; then
+    echo "REFUSED: leaked $label process group for $ID remains after the lsof-free cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
+    return 1
   fi
 }
 

@@ -137,6 +137,18 @@ fm_remote_job_compose_operator_path "$ACCOUNT_HOME" >/dev/null
 case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
   *":$NVM_V20:"*|*":$NVM_V24:"*) fail "the composed PATH ignored nvm's system default" ;;
 esac
+mkdir -p "$NVM_ROOT/alias/lts"
+printf 'lts/*\n' > "$NVM_ROOT/alias/default"
+fm_remote_job_compose_operator_path "$ACCOUNT_HOME" >/dev/null
+case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
+  *":$NVM_V20:"*|*":$NVM_V24:"*) fail "the composed PATH fell back from an unresolved nvm LTS alias" ;;
+esac
+printf 'v20.18.0\n' > "$NVM_ROOT/alias/lts/*"
+fm_remote_job_compose_operator_path "$ACCOUNT_HOME" >/dev/null
+case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
+  *":$NVM_V20:"*) ;;
+  *) fail "the composed PATH did not resolve an installed nvm LTS alias" ;;
+esac
 printf '20\n' > "$NVM_ROOT/alias/default"
 pass "operator PATH honors nvm defaults with a deterministic fallback"
 

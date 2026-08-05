@@ -312,8 +312,9 @@ validate_seed_leaf_files() {
 validate_existing_parent_binding() {
   local home=$1 record recorded_parent requested_parent
   record="$home/$SUB_HOME_PARENT_MARKER"
-  [ -f "$record" ] && [ ! -L "$record" ] || return 0
-  fm_secondmate_parent_record_parse "$record" || return 0
+  [ -e "$record" ] || [ -L "$record" ] || return 0
+  [ -f "$record" ] && [ ! -L "$record" ] || return 1
+  fm_secondmate_parent_record_parse "$record" || return 1
   [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || return 0
 
   recorded_parent=$(resolved_path "$FM_SECONDMATE_PARENT_HOME")

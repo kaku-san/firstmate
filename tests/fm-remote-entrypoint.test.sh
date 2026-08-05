@@ -55,5 +55,25 @@ test_direct_invocation_still_works() {
   pass "fm-remote-entrypoint.sh invoked directly still resolves SCRIPT_DIR correctly"
 }
 
+test_symlink_invocation_without_python_or_realpath_uses_readlink() {
+  local out err code resolver_bin
+  resolver_bin="$TMP_ROOT/resolver-bin"
+  mkdir -p "$resolver_bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$resolver_bin/python3"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$resolver_bin/realpath"
+  chmod +x "$resolver_bin/python3" "$resolver_bin/realpath"
+  out="$TMP_ROOT/readlink.stdout"
+  err="$TMP_ROOT/readlink.stderr"
+  code=$(PATH="$resolver_bin:$PATH" run_entrypoint "$LOCAL_BIN/fm-remote-entrypoint.sh" "$out" "$err")
+
+  expect_code 64 "$code" "readlink resolver invocation exit code"
+  assert_no_grep 'No such file or directory' "$err" \
+    "readlink resolver invocation failed to source its sibling lib"
+  assert_grep 'remote entrypoint expects protocol, root, home, and argv' "$err" \
+    "readlink resolver invocation did not reach argument validation"
+  pass "remote entrypoint resolves PATH symlinks without python3 or realpath"
+}
+
 test_symlink_invocation_resolves_sibling_lib
 test_direct_invocation_still_works
+test_symlink_invocation_without_python_or_realpath_uses_readlink

@@ -139,6 +139,7 @@ fm_remote_job_nvm_selected_bin() { # <account-home>
   local fallback_major=-1 fallback_minor=-1 fallback_patch=-1 matches
   selector=$(fm_remote_job_nvm_default_selector "$account_home" 2>/dev/null || true)
   [ "$selector" != system ] || return 0
+  case "$selector" in lts/*) return 0 ;; esac
   case "$selector" in node|stable|unstable) normalized= ;; v*) normalized=${selector#v} ;; *) normalized=$selector ;; esac
   case "$normalized" in *[!0-9.]*|.*|*.|*..*) normalized=invalid ;; esac
   for directory in "$account_home"/.nvm/versions/node/*/bin; do

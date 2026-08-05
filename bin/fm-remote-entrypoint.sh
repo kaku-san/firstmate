@@ -23,9 +23,25 @@ set -eu
 
 PROTOCOL=1
 DOCTOR_SHA256=7bb13d9fad8455978bf109d4681a3aa3cb170565c8a74be4ec7b520427db14c2
-REAL_SOURCE=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}" 2>/dev/null) ||
-  REAL_SOURCE=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) ||
-  REAL_SOURCE=${BASH_SOURCE[0]}
+resolve_source_path() {
+  local source=$1 source_dir link depth=0
+  while [ "$depth" -lt 40 ] && [ -L "$source" ]; do
+    depth=$((depth + 1))
+    source_dir=$(CDPATH='' cd -- "$(dirname "$source")" 2>/dev/null && pwd -P) || return 1
+    link=$(readlink "$source" 2>/dev/null) || return 1
+    case "$link" in
+      /*) source=$link ;;
+      *) source="$source_dir/$link" ;;
+    esac
+  done
+  [ ! -L "$source" ] || return 1
+  source_dir=$(CDPATH='' cd -- "$(dirname "$source")" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "$source_dir" "$(basename "$source")"
+}
+REAL_SOURCE=$(resolve_source_path "${BASH_SOURCE[0]}") || {
+  printf 'error: cannot resolve the remote entrypoint path; install readlink or invoke the real checkout path\n' >&2
+  exit 70
+}
 SCRIPT_DIR=$(CDPATH='' cd "$(dirname "$REAL_SOURCE")" && pwd -P)
 
 # shellcheck source=bin/fm-remote-job-lib.sh

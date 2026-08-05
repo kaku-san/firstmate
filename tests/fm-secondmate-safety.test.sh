@@ -1351,6 +1351,17 @@ test_home_seed_preserves_existing_parent_binding() {
     || fail "matching-parent reseed did not report success"
   cmp -s "$before/.fm-secondmate-parent" "$child/.fm-secondmate-parent" \
     || fail "matching-parent reseed changed the durable parent binding"
+
+  printf 'schema=fm-secondmate-parent.v1\nroute=local\n' > "$child/.fm-secondmate-parent"
+  if FM_HOME="$parent_a" FM_SECONDMATE_CHARTER='Malformed parent replacement charter.' \
+    FM_SECONDMATE_SCOPE='malformed parent replacement scope' \
+    "$ROOT/bin/fm-home-seed.sh" mate "$child" --no-projects > /dev/null 2>"$err"; then
+    fail "reseed accepted a malformed existing durable parent binding"
+  fi
+  cmp -s "$child/.fm-secondmate-parent" <(printf 'schema=fm-secondmate-parent.v1\nroute=local\n') \
+    || fail "malformed durable parent reseed rewrote the existing parent binding"
+  [ "$(cat "$child/.fm-secondmate-home")" = mate ] \
+    || fail "malformed durable parent reseed changed the identity marker"
   pass "home reseeding preserves and enforces the durable parent binding"
 }
 
