@@ -821,18 +821,24 @@ test_brief_publication_rejects_swapped_staging_file() {
 package fm_test_swapped_staging;
 use strict;
 use warnings;
+use IO::Handle ();
 
 BEGIN {
-  sub swap_staging {
-    my ($source, $destination) = @_;
-    unlink($source) or die "unlink staging: $!\n";
-    open my $replacement, '>', $source or die "open staging replacement: $!\n";
-    print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
-    close $replacement or die "close staging replacement: $!\n";
-    return CORE::link($source, $destination);
-  }
-  *CORE::GLOBAL::link = \&swap_staging;
-  *main::link = \&swap_staging;
+  my $original_sync = \&IO::Handle::sync;
+  my $swapped = 0;
+  *IO::Handle::sync = sub {
+    my ($output) = @_;
+    if (!$swapped) {
+      my ($staging) = glob q{.brief.md.pending.*};
+      die "staging file not found\n" unless defined $staging;
+      unlink($staging) or die "unlink staging: $!\n";
+      open my $replacement, '>', $staging or die "open staging replacement: $!\n";
+      print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
+      close $replacement or die "close staging replacement: $!\n";
+      $swapped = 1;
+    }
+    return $original_sync->($output);
+  };
 }
 
 1;

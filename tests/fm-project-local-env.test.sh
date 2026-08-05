@@ -553,20 +553,24 @@ test_spawn_rejects_swapped_legacy_staging_file() {
 package fm_test_swapped_staging;
 use strict;
 use warnings;
+use IO::Handle ();
 
 BEGIN {
-  sub swap_staging {
-    my ($source, $destination) = @_;
-    if ($source =~ /^\.brief\.md\.fm-/) {
-      unlink($source) or die "unlink staging: $!\n";
-      open my $replacement, '>', $source or die "open staging replacement: $!\n";
+  my $original_sync = \&IO::Handle::sync;
+  my $swapped = 0;
+  *IO::Handle::sync = sub {
+    my ($output) = @_;
+    if (!$swapped) {
+      my ($staging) = glob q{.brief.md.fm-*};
+      die "staging file not found\n" unless defined $staging;
+      unlink($staging) or die "unlink staging: $!\n";
+      open my $replacement, '>', $staging or die "open staging replacement: $!\n";
       print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
       close $replacement or die "close staging replacement: $!\n";
+      $swapped = 1;
     }
-    return CORE::rename($source, $destination);
-  }
-  *CORE::GLOBAL::rename = \&swap_staging;
-  *main::rename = \&swap_staging;
+    return $original_sync->($output);
+  };
 }
 
 1;
@@ -586,7 +590,8 @@ PERL
   expect_code 1 "$status" "a swapped legacy staging file must be refused"
   assert_contains "$out" 'could not atomically add' \
     "swapped legacy staging refusal lost its message"
-  assert_absent "$home/data/$id/brief.md" "swapped staging content was published as the legacy brief"
+  [ "$(cat "$home/data/$id/brief.md")" = 'legacy brief' ] || \
+    fail "a staging-file swap did not preserve the original legacy brief"
   assert_absent "$log" "swapped legacy staging reached endpoint creation"
   if find "$home/data" -name '.brief.md.fm-*' | grep -q .; then
     fail "swapped legacy staging refusal left a staging file behind"
