@@ -54,7 +54,11 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
-# Refuses to overwrite an existing brief.
+# Refuses to overwrite an existing brief. Publication stages the brief in a
+# private same-directory file and links it into place without replacement, so a
+# hostile same-user path swap can never turn the write into a write-through or
+# overwrite a pre-existing path (regular file, symlink, or special file such as
+# a FIFO) before anything is opened.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -167,8 +171,95 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
 fi
 
 BRIEF="$DATA/$ID/brief.md"
-[ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
-mkdir -p "$DATA/$ID"
+
+# Publish through a private same-directory staging file and an atomic no-replace link.
+publish_brief() {
+  local status
+  if perl -MFcntl=:DEFAULT -MIO::Handle -e '
+    my ($data_directory, $task_id, $name) = @ARGV;
+    sub pin_directory {
+      my ($directory) = @_;
+      my @leaf = lstat($directory) or return;
+      return if -l _ || !-d _;
+      my @validated = stat($directory) or return;
+      return unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+      chdir($directory) or return;
+      my @pinned = stat(q{.}) or return;
+      return $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    }
+    pin_directory($data_directory) or exit 2;
+    if (!lstat($task_id)) {
+      exit 2 unless $!{ENOENT};
+      mkdir($task_id) or exit 2;
+    }
+    pin_directory($task_id) or exit 2;
+    exit 3 if lstat($name);
+    exit 4 unless $!{ENOENT};
+    sub open_private_staging {
+      my ($prefix) = @_;
+      sysopen(my $random, q{/dev/urandom}, O_RDONLY) or return;
+      for (1 .. 100) {
+        my $bytes = q{};
+        while (length($bytes) < 32) {
+          my $read = read($random, my $chunk, 32 - length($bytes));
+          unless (defined($read) && $read > 0) {
+            close($random);
+            return;
+          }
+          $bytes .= $chunk;
+        }
+        my $temporary = $prefix . unpack(q{H*}, $bytes);
+        if (sysopen(my $output, $temporary,
+          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)) {
+          close($random) or do { close($output); unlink($temporary); return };
+          return ($temporary, $output);
+        }
+        last unless $!{EEXIST};
+      }
+      close($random);
+      return;
+    }
+    my $temporary;
+    END { unlink($temporary) if defined $temporary }
+    my $output;
+    ($temporary, $output) = open_private_staging(q{.brief.md.pending.});
+    exit 4 unless $output;
+    while (1) {
+      my $read = read(STDIN, my $buffer, 65536);
+      exit 4 unless defined $read;
+      last if $read == 0;
+      print {$output} $buffer or exit 4;
+    }
+    $output->sync or exit 4;
+    my @temporary_stat = stat($output) or exit 4;
+    close($output) or exit 4;
+    my @temporary_name_stat = lstat($temporary);
+    unless (@temporary_name_stat && $temporary_name_stat[0] == $temporary_stat[0]
+      && $temporary_name_stat[1] == $temporary_stat[1] && $temporary_name_stat[3] == 1) {
+      unlink($temporary);
+      exit 4;
+    }
+    link($temporary, $name) or exit($!{EEXIST} ? 3 : 4);
+    my @final_stat = lstat($name);
+    unless (@final_stat && $final_stat[0] == $temporary_stat[0]
+      && $final_stat[1] == $temporary_stat[1]) {
+      unlink($name);
+      exit 4;
+    }
+    unlink($temporary) or exit 4;
+    undef $temporary;
+  ' "$DATA" "$ID" brief.md; then
+    return 0
+  else
+    status=$?
+  fi
+  case "$status" in
+    2) echo "error: task brief directory is not a stable real directory: $DATA/$ID" >&2 ;;
+    3) echo "error: $BRIEF already exists" >&2 ;;
+    *) echo "error: cannot publish brief to $BRIEF" >&2 ;;
+  esac
+  return 1
+}
 
 shell_quote() {
   printf "'"
@@ -199,7 +290,7 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
 # Charter
@@ -300,7 +391,7 @@ fi
 LOCAL_ENV_SECTION=$("$SCRIPT_DIR/fm-project-local-env.sh" brief-section)
 
 if [ "$KIND" = scout ]; then
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -411,7 +502,7 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task

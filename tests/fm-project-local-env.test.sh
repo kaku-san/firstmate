@@ -150,16 +150,24 @@ test_multiline_process_environment_does_not_spoof_presence() {
   pass "process presence checks query only the requested variable"
 }
 
-write_race_perl() {
+# write_swap_perl <fakebin>: install a `perl` shim that once renames
+# FM_TEST_SWAP_PATH aside and leaves a symlink to FM_TEST_SWAP_TARGET in its
+# place - the same swap for a file or a directory. The selected phase fires on
+# either the scan invocation (`-MFcntl=:DEFAULT`) or directory resolution.
+write_swap_perl() {
   local fakebin=$1
   cat > "$fakebin/perl" <<'SH'
 #!/usr/bin/env bash
 set -u
-if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
-  rm -f -- "$FM_TEST_SWAP_PATH"
-  ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
-  : > "$FM_TEST_SWAP_DONE"
-fi
+case "${FM_TEST_SWAP_PHASE:-scan}: $*" in
+  scan:*" -MFcntl=:DEFAULT "*|resolve:*" -MCwd=realpath "*)
+    if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
+      mv -- "$FM_TEST_SWAP_PATH" "$FM_TEST_SWAP_PATH.moved"
+      ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
+      : > "$FM_TEST_SWAP_DONE"
+    fi
+    ;;
+esac
 exec "$FM_REAL_PERL" "$@"
 SH
   chmod +x "$fakebin/perl"
@@ -177,7 +185,7 @@ test_local_source_swap_stops_safely() {
   printf '%s\n' 'PARALLEL_API_KEY=dummy-original-value' > "$primary/.env.local"
   printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside"
   fakebin=$(fm_fakebin "$case_dir/fake")
-  write_race_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$primary/.env.local" FM_TEST_SWAP_TARGET="$outside" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
@@ -194,7 +202,110 @@ test_local_source_swap_stops_safely() {
     "a swapped local source exposed a value"
   [ "$(cat "$outside")" = 'PARALLEL_API_KEY=dummy-outside-value' ] || \
     fail "the swapped local source target was modified"
+  [ "$(cat "$primary/.env.local.moved")" = 'PARALLEL_API_KEY=dummy-original-value' ] || \
+    fail "the swapped-away local source was modified"
   pass "local sources are opened once without following a replacement symlink"
+}
+
+test_special_local_sources_are_rejected_without_hanging() {
+  local case_dir primary isolated out status
+  case_dir="$TMP_ROOT/special-local-sources"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+
+  mkfifo "$primary/.env.local"
+  out=$(fm_run_with_deadline 10 run_check "$primary" "$isolated" PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a FIFO primary local source must stop safely without hanging"
+  assert_contains "$out" 'not a safe regular file or is unreadable' \
+    "the FIFO primary local source refusal did not explain the safety boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: present' \
+    "a FIFO primary local source produced a false presence result"
+  rm -f "$primary/.env.local"
+
+  mkfifo "$isolated/.env.local"
+  out=$(fm_run_with_deadline 10 run_check "$primary" "$isolated" PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a FIFO isolated local source must stop safely without hanging"
+  assert_contains "$out" 'not a safe regular file or is unreadable' \
+    "the FIFO isolated local source refusal did not explain the safety boundary"
+  rm -f "$isolated/.env.local"
+
+  mkdir "$primary/.env.local"
+  out=$(fm_run_with_deadline 10 run_check "$primary" "$isolated" PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a directory at the local source path must stop safely"
+  assert_contains "$out" 'not a safe regular file or is unreadable' \
+    "the directory local source refusal did not explain the safety boundary"
+  pass "FIFOs and other non-regular local sources are rejected promptly without hanging"
+}
+
+test_parent_directory_swap_stops_safely() {
+  local case_dir primary isolated outside swap_done fakebin out status
+  case_dir="$TMP_ROOT/parent-directory-swap"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-real-value' > "$primary/.env.local"
+  mkdir -p "$outside"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside/.env.local"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PATH="$primary" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
+    FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
+    FM_PROJECT_LOCAL_ENV_FILE=.env.local \
+    fm_run_with_deadline 10 "$CHECK" check PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a primary directory swapped to a symlink must stop safely"
+  assert_contains "$out" 'not a stable real directory' \
+    "the swapped primary directory refusal did not explain the pinning boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: present' \
+    "a swapped primary directory produced a false presence result"
+  assert_not_contains "$out" 'dummy-outside-value' \
+    "a swapped primary directory exposed the replacement's value"
+  [ "$(cat "$primary.moved/.env.local")" = 'PARALLEL_API_KEY=dummy-real-value' ] || \
+    fail "the swapped-away primary local source was modified"
+  pass "a parent-directory swap between resolution and read fails closed"
+}
+
+test_parent_directory_swap_during_resolution_stops_safely() {
+  local case_dir primary isolated outside swap_done fakebin out status
+  case_dir="$TMP_ROOT/parent-directory-resolution-swap"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-real-value' > "$primary/.env.local"
+  mkdir -p "$outside"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside/.env.local"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PHASE=resolve FM_TEST_SWAP_PATH="$primary" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
+    FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
+    FM_PROJECT_LOCAL_ENV_FILE=.env.local \
+    fm_run_with_deadline 10 "$CHECK" check PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a primary directory swapped during resolution must stop safely"
+  assert_contains "$out" 'cannot resolve FM_PRIMARY_PROJECT_DIR' \
+    "the resolution-time swap refusal did not explain the pinning boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: present' \
+    "a resolution-time directory swap produced a false presence result"
+  assert_not_contains "$out" 'dummy-outside-value' \
+    "a resolution-time directory swap exposed the replacement's value"
+  [ "$(cat "$primary.moved/.env.local")" = 'PARALLEL_API_KEY=dummy-real-value' ] || \
+    fail "the resolution-time swapped-away local source was modified"
+  pass "a parent-directory swap during resolution fails closed"
 }
 
 test_unsafe_boundary_stops_safely() {
@@ -367,6 +478,189 @@ test_spawn_worker_resolves_primary_local_presence() {
   pass "isolated worker resolves primary-local presence through path-only metadata"
 }
 
+test_spawn_legacy_upgrade_uses_unpredictable_staging_name() {
+  local case_dir home primary isolated log pending worker_log worker_status
+  local fakebin id hookdir stage_name out status
+  case_dir="$TMP_ROOT/spawn-random-stage"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
+  id=local-env-random-stage-z2
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" spawn-random-stage
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_staging_name.pm" <<'PERL'
+package fm_test_staging_name;
+use strict;
+use warnings;
+
+BEGIN {
+  *main::rename = sub {
+    my ($source, $destination) = @_;
+    if ($source =~ /^\.brief\.md\.fm-/) {
+      open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
+      print {$record} "$source\n" or die "write staging record: $!\n";
+      close $record or die "close staging record: $!\n";
+    }
+    return CORE::rename($source, $destination);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(FM_TEST_STAGING_NAME="$case_dir/staging-name" PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" \
+    PERL5OPT=-Mfm_test_staging_name FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "spawn should upgrade a legacy brief through private staging: $out"
+  stage_name=$(cat "$case_dir/staging-name")
+  printf '%s\n' "$stage_name" | LC_ALL=C grep -Eq '^\.brief\.md\.fm-[0-9a-f]{64}$' \
+    || fail "legacy brief upgrade did not use an unguessable private staging name: $stage_name"
+  pass "legacy brief upgrade uses an unguessable private staging name"
+}
+
+test_spawn_rejects_swapped_legacy_staging_file() {
+  local case_dir home primary isolated log pending worker_log worker_status
+  local id fakebin hookdir out status
+  case_dir="$TMP_ROOT/swapped-legacy-staging"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
+  id=local-env-swapped-stage-z3
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" swapped-legacy-staging
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_swapped_staging.pm" <<'PERL'
+package fm_test_swapped_staging;
+use strict;
+use warnings;
+use IO::Handle ();
+
+BEGIN {
+  my $original_sync = \&IO::Handle::sync;
+  my $swapped = 0;
+  *IO::Handle::sync = sub {
+    my ($output) = @_;
+    if (!$swapped) {
+      my ($staging) = glob q{.brief.md.fm-*};
+      die "staging file not found\n" unless defined $staging;
+      unlink($staging) or die "unlink staging: $!\n";
+      open my $replacement, '>', $staging or die "open staging replacement: $!\n";
+      print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
+      close $replacement or die "close staging replacement: $!\n";
+      $swapped = 1;
+    }
+    return $original_sync->($output);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_swapped_staging \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" \
+    TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "a swapped legacy staging file must be refused"
+  assert_contains "$out" 'could not atomically add' \
+    "swapped legacy staging refusal lost its message"
+  [ "$(cat "$home/data/$id/brief.md")" = 'legacy brief' ] || \
+    fail "a staging-file swap did not preserve the original legacy brief"
+  assert_absent "$log" "swapped legacy staging reached endpoint creation"
+  if find "$home/data" -name '.brief.md.fm-*' | grep -q .; then
+    fail "swapped legacy staging refusal left a staging file behind"
+  fi
+  pass "legacy brief upgrade rejects a staging-file swap"
+}
+
+test_spawn_replaces_raced_legacy_final_atomically() {
+  local case_dir home primary isolated log pending worker_log worker_status
+  local id fakebin hookdir out status
+  case_dir="$TMP_ROOT/raced-legacy-final"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
+  id=local-env-raced-final-z4
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" raced-legacy-final
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_raced_final.pm" <<'PERL'
+package fm_test_raced_final;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::rename = sub {
+    my ($source, $destination) = @_;
+    if ($source =~ /^\.brief\.md\.fm-/ && $destination eq q{brief.md}) {
+      open my $raced, q{>}, $destination or die "open raced brief: $!\n";
+      print {$raced} "attacker brief\n" or die "write raced brief: $!\n";
+      close $raced or die "close raced brief: $!\n";
+    }
+    return CORE::rename($source, $destination);
+  };
+  *CORE::GLOBAL::unlink = sub {
+    my ($path) = @_;
+    die "legacy final was unlinked\n" if $path eq q{brief.md};
+    return CORE::unlink($path);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_raced_final \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" \
+    TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "a raced legacy final should be atomically replaced: $out"
+  assert_grep '# Project-local configuration boundary' "$home/data/$id/brief.md" \
+    "atomic legacy replacement did not publish the upgraded brief"
+  assert_no_grep 'attacker brief' "$home/data/$id/brief.md" \
+    "raced final content survived the atomic legacy replacement"
+  assert_present "$log" "atomic legacy replacement did not reach endpoint creation"
+  pass "legacy brief upgrade atomically replaces a raced final path"
+}
+
 test_spawn_rejects_symlinked_legacy_brief() {
   local case_dir home primary isolated outside target log id fakebin out status
   case_dir="$TMP_ROOT/symlinked-legacy-brief"
@@ -447,7 +741,7 @@ test_spawn_rejects_swapped_legacy_brief() {
   printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
   printf '%s\n' 'outside brief remains unchanged' > "$target"
   fakebin=$(write_spawn_fakebin "$case_dir/fake")
-  write_race_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$home/data/$id/brief.md" FM_TEST_SWAP_TARGET="$target" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
@@ -465,6 +759,104 @@ test_spawn_rejects_swapped_legacy_brief() {
     fail "swapped legacy brief target was modified"
   assert_absent "$log" "swapped legacy brief reached endpoint creation"
   pass "legacy brief upgrade refuses a replacement symlink before mutation"
+}
+
+test_spawn_rejects_fifo_legacy_brief() {
+  local case_dir home primary isolated log id fakebin out status
+  case_dir="$TMP_ROOT/fifo-legacy-brief"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  id=local-env-fifo-z6
+  mkdir -p "$home/data/$id" "$home/state" "$home/config"
+  fm_git_worktree "$primary" "$isolated" fifo-legacy-brief
+  mkfifo "$home/data/$id/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(fm_run_with_deadline 20 env \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a FIFO legacy brief without hanging"
+  assert_contains "$out" 'non-symlink regular file' \
+    "FIFO legacy brief refusal did not explain the safety boundary"
+  assert_absent "$log" "FIFO legacy brief reached endpoint creation"
+  pass "legacy brief upgrade rejects a FIFO promptly without hanging"
+}
+
+test_spawn_rejects_swapped_task_data_directory() {
+  local case_dir home primary isolated outside swap_done log id fakebin out status
+  case_dir="$TMP_ROOT/swapped-task-data-directory"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  log="$case_dir/tmux.log"
+  id=local-env-dirswap-z7
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside"
+  fm_git_worktree "$primary" "$isolated" swapped-task-data-directory
+  printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
+  printf '%s\n' 'outside brief remains unchanged' > "$outside/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PATH="$home/data/$id" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a task data directory swapped to a symlink"
+  assert_contains "$out" 'not a stable real directory' \
+    "swapped task data directory refusal did not explain the pinning boundary"
+  [ "$(cat "$outside/brief.md")" = 'outside brief remains unchanged' ] || \
+    fail "swapped task data directory target was modified"
+  assert_absent "$log" "swapped task data directory reached endpoint creation"
+  pass "legacy brief upgrade pins the task data directory against a parent swap"
+}
+
+test_spawn_rejects_swapped_data_parent_directory() {
+  local case_dir home primary isolated outside swap_done log id fakebin out status
+  case_dir="$TMP_ROOT/swapped-data-parent-directory"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  log="$case_dir/tmux.log"
+  id=local-env-dataparent-z8
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside/$id"
+  fm_git_worktree "$primary" "$isolated" swapped-data-parent-directory
+  printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
+  printf '%s\n' 'outside brief remains unchanged' > "$outside/$id/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PHASE=resolve FM_TEST_SWAP_PATH="$home/data" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a data parent directory swapped before task resolution"
+  assert_contains "$out" 'task data parent directory' \
+    "swapped data parent refusal did not explain the pinning boundary"
+  [ "$(cat "$outside/$id/brief.md")" = 'outside brief remains unchanged' ] || \
+    fail "swapped data parent redirected the legacy brief upgrade"
+  assert_absent "$log" "swapped data parent reached endpoint creation"
+  pass "legacy brief upgrade rejects a startup data parent replacement"
 }
 
 test_brief_carries_the_boundary_contract() {
@@ -491,9 +883,18 @@ test_process_and_isolated_sources_are_presence_only
 test_multiline_process_environment_does_not_spoof_presence
 test_unsafe_boundary_stops_safely
 test_local_source_swap_stops_safely
+test_special_local_sources_are_rejected_without_hanging
+test_parent_directory_swap_stops_safely
+test_parent_directory_swap_during_resolution_stops_safely
 test_spawn_worker_resolves_primary_local_presence
+test_spawn_legacy_upgrade_uses_unpredictable_staging_name
+test_spawn_rejects_swapped_legacy_staging_file
+test_spawn_replaces_raced_legacy_final_atomically
 test_spawn_rejects_symlinked_legacy_brief
 test_spawn_rejects_hardlinked_legacy_brief
 test_spawn_rejects_swapped_legacy_brief
+test_spawn_rejects_fifo_legacy_brief
+test_spawn_rejects_swapped_task_data_directory
+test_spawn_rejects_swapped_data_parent_directory
 test_brief_carries_the_boundary_contract
 printf '# all fm-project-local-env tests passed\n'

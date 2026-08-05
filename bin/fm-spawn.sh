@@ -134,8 +134,11 @@
 # The worker invokes the checker for presence-only credential/configuration
 # conclusions; no local environment value is copied, exported, or recorded.
 # Before endpoint creation, spawn adds the executable-owned boundary section to
-# a legacy ship/scout brief only through an atomic replacement of a non-symlink
-# regular single-linked brief.md inside the resolved task data directory.
+# a legacy ship/scout brief only through an atomic replacement from a
+# regular single-linked brief.md inside the resolved task data directory, which
+# is pinned by device+inode identity from resolution through the write.
+# Sources open nonblocking, so a FIFO or other special brief file fails the
+# safety check immediately instead of hanging the reader.
 # An unsafe path or a brief that changes during the upgrade fails closed.
 # The path metadata is backend-neutral and is set in the task pane shell before
 # every supported harness launch.
@@ -188,6 +191,22 @@ resolve_directory_input() {
     return 1
   }
   printf '%s\n' "$resolved"
+}
+
+capture_pinned_directory_identity() {  # <path> -> "<dev> <ino>"
+  local path=$1
+  perl -e '
+    my ($path) = @ARGV;
+    my @leaf = lstat($path) or exit 1;
+    exit 1 if -l _;
+    exit 1 unless -d _;
+    my @validated = stat($path) or exit 1;
+    exit 1 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($path) or exit 1;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    printf "%d %d\n", $leaf[0], $leaf[1];
+  ' "$path"
 }
 
 FM_HOME=$(resolve_directory_input FM_HOME "$FM_HOME") || exit 1
@@ -1165,17 +1184,68 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+resolve_pinned_dir() {  # <label> <path> -> "<dev> <ino> <resolved-path>"
+  local label=$1 path=$2
+  perl -MCwd=realpath -e '
+    my ($path) = @ARGV;
+    my @leaf = lstat($path) or exit 1;
+    exit 1 if -l _;
+    exit 1 unless -d _;
+    my @validated = stat($path) or exit 1;
+    exit 1 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($path) or exit 1;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    my $resolved = realpath(q{.}) or exit 1;
+    printf "%d %d %s\n", $leaf[0], $leaf[1], $resolved;
+  ' "$path" || {
+    echo "error: $label cannot be resolved: $path" >&2
+    return 1
+  }
+}
+split_pinned_dir() {  # <output> -> sets PIN_DEV PIN_INO PIN_PATH
+  PIN_DEV=${1%% *}
+  local rest=${1#* }
+  PIN_INO=${rest%% *}
+  PIN_PATH=${rest#* }
+}
 upgrade_legacy_brief() {
-  local task_dir task_dir_real brief_dir_real brief_name local_env_section status
-  task_dir="$DATA/$ID"
-  task_dir_real=$(CDPATH='' cd -P -- "$task_dir" 2>/dev/null && pwd -P) || {
-    echo "error: task data directory cannot be resolved: $task_dir" >&2
+  (
+  local data_pin data_pin_dev data_pin_ino data_dir_out task_dir task_dir_out brief_dir_out
+  local task_dir_real brief_dir_real brief_name local_env_section status task_dir_dev task_dir_ino
+  data_pin=$(capture_pinned_directory_identity "$DATA") || {
+    echo "error: data directory is not a stable real directory: $DATA" >&2
     return 1
   }
-  brief_dir_real=$(CDPATH='' cd -P -- "$(dirname "$BRIEF")" 2>/dev/null && pwd -P) || {
-    echo "error: task brief directory cannot be resolved: $(dirname "$BRIEF")" >&2
+  data_pin_dev=${data_pin%% *}
+  data_pin_ino=${data_pin#* }
+  data_dir_out=$(resolve_pinned_dir "task data parent directory" "$DATA") || return 1
+  split_pinned_dir "$data_dir_out"
+  [ "$PIN_DEV" = "$data_pin_dev" ] && [ "$PIN_INO" = "$data_pin_ino" ] || {
+    echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
     return 1
   }
+  cd "$DATA" || {
+    echo "error: could not enter startup-pinned data directory: $DATA" >&2
+    return 1
+  }
+  if ! perl -e '
+    my ($want_dev, $want_ino) = @ARGV;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $want_dev && $pinned[1] == $want_ino && -d _;
+  ' "$data_pin_dev" "$data_pin_ino"; then
+    echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
+    return 1
+  fi
+  task_dir="$ID"
+  task_dir_out=$(resolve_pinned_dir "task data directory" "$task_dir") || return 1
+  split_pinned_dir "$task_dir_out"
+  task_dir_real=$PIN_PATH
+  task_dir_dev=$PIN_DEV
+  task_dir_ino=$PIN_INO
+  brief_dir_out=$(resolve_pinned_dir "task brief directory" "$(dirname "$BRIEF")") || return 1
+  split_pinned_dir "$brief_dir_out"
+  brief_dir_real=$PIN_PATH
   [ "$brief_dir_real" = "$task_dir_real" ] || {
     echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
     return 1
@@ -1189,11 +1259,18 @@ upgrade_legacy_brief() {
     echo "error: could not render the project-local configuration boundary for $BRIEF" >&2
     return 1
   }
-  if perl -MFcntl=:DEFAULT -MCwd=getcwd -MIO::Handle -e '
-    my ($directory, $name, $section) = @ARGV;
+  if perl -MFcntl=:DEFAULT -MIO::Handle -e '
+    my ($directory, $want_dev, $want_ino, $name, $section) = @ARGV;
+    my @leaf = lstat($directory) or exit 6;
+    exit 6 if -l _;
+    exit 6 unless -d _;
+    my @validated = stat($directory) or exit 6;
+    exit 6 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    exit 6 unless $leaf[0] == $want_dev && $leaf[1] == $want_ino;
     chdir($directory) or exit 3;
-    exit 3 unless getcwd() eq $directory;
-    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW) or exit 3;
+    my @pinned_stat = stat(".") or exit 6;
+    exit 6 unless $pinned_stat[0] == $leaf[0] && $pinned_stat[1] == $leaf[1];
+    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 3;
     my @source_stat = stat($source) or exit 3;
     exit 3 unless -f _ && $source_stat[3] == 1;
     my $marker = q{Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`};
@@ -1207,14 +1284,33 @@ upgrade_legacy_brief() {
       && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1;
     exit 0 if $found;
     seek($source, 0, 0) or exit 5;
+    sub open_private_staging {
+      my ($prefix) = @_;
+      sysopen(my $random, q{/dev/urandom}, O_RDONLY) or return;
+      for (1 .. 100) {
+        my $bytes = q{};
+        while (length($bytes) < 32) {
+          my $read = read($random, my $chunk, 32 - length($bytes));
+          unless (defined($read) && $read > 0) {
+            close($random);
+            return;
+          }
+          $bytes .= $chunk;
+        }
+        my $temporary = $prefix . unpack(q{H*}, $bytes);
+        if (sysopen(my $output, $temporary,
+          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)) {
+          close($random) or do { close($output); unlink($temporary); return };
+          return ($temporary, $output);
+        }
+        last unless $!{EEXIST};
+      }
+      close($random);
+      return;
+    }
     my ($temporary, $output);
     END { unlink($temporary) if defined($temporary) }
-    for my $attempt (1 .. 100) {
-      $temporary = sprintf ".brief.md.fm-%d-%d-%d", $$, time, $attempt;
-      last if sysopen($output, $temporary,
-        O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-      undef $output;
-    }
+    ($temporary, $output) = open_private_staging(q{.brief.md.fm-});
     exit 5 unless $output;
     while (1) {
       my $read = read($source, my $buffer, 65536);
@@ -1225,7 +1321,14 @@ upgrade_legacy_brief() {
     print {$output} "\n$section\n" or exit 5;
     chmod($source_stat[2] & 07777, $output) or exit 5;
     $output->sync or exit 5;
+    my @temporary_stat = stat($output) or exit 5;
     close($output) or exit 5;
+    my @temporary_name_stat = lstat($temporary);
+    unless (@temporary_name_stat && $temporary_name_stat[0] == $temporary_stat[0]
+      && $temporary_name_stat[1] == $temporary_stat[1] && $temporary_name_stat[3] == 1) {
+      unlink($temporary);
+      exit 5;
+    }
     @named_stat = lstat($name);
     unless (@named_stat && $named_stat[0] == $source_stat[0]
       && $named_stat[1] == $source_stat[1] && $named_stat[3] == 1) {
@@ -1233,8 +1336,14 @@ upgrade_legacy_brief() {
       exit 4;
     }
     rename($temporary, $name) or do { unlink($temporary); exit 5 };
+    my @final_stat = lstat($name);
+    unless (@final_stat && $final_stat[0] == $temporary_stat[0]
+      && $final_stat[1] == $temporary_stat[1]) {
+      unlink($name);
+      exit 5;
+    }
     undef $temporary;
-  ' "$task_dir_real" "$brief_name" "$local_env_section"; then
+  ' "$task_dir_real" "$task_dir_dev" "$task_dir_ino" "$brief_name" "$local_env_section"; then
     return 0
   else
     status=$?
@@ -1246,11 +1355,15 @@ upgrade_legacy_brief() {
     4)
       echo "error: task brief changed during safe legacy upgrade: $BRIEF" >&2
       ;;
+    6)
+      echo "error: task data directory is not a stable real directory during safe legacy upgrade: $task_dir" >&2
+      ;;
     *)
       echo "error: could not atomically add the project-local configuration boundary to $BRIEF" >&2
       ;;
   esac
   return 1
+  )
 }
 
 if [ "$KIND" != secondmate ]; then

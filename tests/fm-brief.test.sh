@@ -689,6 +689,246 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
+# Publication must refuse any pre-existing brief path - a regular file, a
+# symlink (including a dangling one), or a special file such as a FIFO - before
+# anything is opened, and the staging file must never linger after a refusal or
+# a successful publish.
+test_brief_publication_refuses_special_and_existing_paths() {
+  local home id out status target
+  home="$TMP_ROOT/publication-home"
+  mkdir -p "$home/data"
+
+  id='brief-pub-existing'
+  mkdir -p "$home/data/$id"
+  printf 'pre-existing brief\n' > "$home/data/$id/brief.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "an existing brief must still be refused"
+  assert_contains "$out" 'already exists' "existing brief refusal lost its message"
+  [ "$(cat "$home/data/$id/brief.md")" = 'pre-existing brief' ] || \
+    fail "the pre-existing brief was overwritten"
+
+  id='brief-pub-symlink'
+  mkdir -p "$home/data/$id"
+  target="$home/data/$id/outside-target.md"
+  ln -s "$target" "$home/data/$id/brief.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a dangling symlink at the brief path must be refused"
+  assert_contains "$out" 'already exists' "dangling symlink refusal lost its message"
+  assert_absent "$target" "the scaffold wrote through a dangling brief symlink"
+  [ -L "$home/data/$id/brief.md" ] || fail "the refusal replaced the planted symlink"
+
+  id='brief-pub-fifo'
+  mkdir -p "$home/data/$id"
+  mkfifo "$home/data/$id/brief.md"
+  out=$(fm_run_with_deadline 10 env FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a FIFO at the brief path must be refused without hanging"
+  assert_contains "$out" 'already exists' "FIFO refusal lost its message"
+  [ -p "$home/data/$id/brief.md" ] || fail "the refusal replaced the planted FIFO"
+
+  id='brief-pub-clean'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "a clean scaffold should still publish"
+  assert_present "$home/data/$id/brief.md" "clean scaffold did not publish the brief"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "brief publication left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication refuses existing/symlink/special paths and never leaves staging"
+}
+
+test_brief_publication_refuses_raced_final_path() {
+  local home id hookdir out status brief
+  home="$TMP_ROOT/publication-raced-final-home"
+  id='brief-pub-raced-final'
+  hookdir="$home/perl-hook"
+  brief="$home/data/$id/brief.md"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_raced_final.pm" <<'PERL'
+package fm_test_raced_final;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    open my $raced, '>', $destination or die "open $destination: $!\n";
+    print {$raced} "concurrent brief\n" or die "write $destination: $!\n";
+    close $raced or die "close $destination: $!\n";
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_raced_final \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a concurrently created brief must be refused"
+  assert_contains "$out" 'already exists' "raced brief refusal lost its message"
+  [ "$(cat "$brief")" = 'concurrent brief' ] || fail "the raced brief was overwritten"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "raced brief refusal left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication preserves a concurrently created brief"
+}
+
+test_brief_publication_uses_unpredictable_staging_name() {
+  local home id hookdir stage_name
+  home="$TMP_ROOT/publication-random-stage-home"
+  id='brief-pub-random-stage'
+  hookdir="$home/perl-hook"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_staging_name.pm" <<'PERL'
+package fm_test_staging_name;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
+    print {$record} "$source\n" or die "write staging record: $!\n";
+    close $record or die "close staging record: $!\n";
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+
+  FM_TEST_STAGING_NAME="$home/staging-name" PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" \
+    PERL5OPT=-Mfm_test_staging_name FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "a clean scaffold should publish through a private staging file"
+  stage_name=$(cat "$home/staging-name")
+  printf '%s\n' "$stage_name" | LC_ALL=C grep -Eq '^\.brief\.md\.pending\.[0-9a-f]{64}$' \
+    || fail "brief publication did not use an unguessable private staging name: $stage_name"
+  pass "fm-brief.sh: publication uses an unguessable private staging name"
+}
+
+test_brief_publication_rejects_swapped_staging_file() {
+  local home id hookdir out status brief
+  home="$TMP_ROOT/publication-swapped-stage-home"
+  id='brief-pub-swapped-stage'
+  hookdir="$home/perl-hook"
+  brief="$home/data/$id/brief.md"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_swapped_staging.pm" <<'PERL'
+package fm_test_swapped_staging;
+use strict;
+use warnings;
+use IO::Handle ();
+
+BEGIN {
+  my $original_sync = \&IO::Handle::sync;
+  my $swapped = 0;
+  *IO::Handle::sync = sub {
+    my ($output) = @_;
+    if (!$swapped) {
+      my ($staging) = glob q{.brief.md.pending.*};
+      die "staging file not found\n" unless defined $staging;
+      unlink($staging) or die "unlink staging: $!\n";
+      open my $replacement, '>', $staging or die "open staging replacement: $!\n";
+      print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
+      close $replacement or die "close staging replacement: $!\n";
+      $swapped = 1;
+    }
+    return $original_sync->($output);
+  };
+}
+
+1;
+PERL
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_swapped_staging \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a swapped staging file must fail publication"
+  assert_contains "$out" 'cannot publish brief' "swapped staging refusal lost its message"
+  assert_absent "$brief" "swapped staging content was published as the brief"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "swapped staging refusal left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication rejects a staging-file swap"
+}
+
+test_brief_publication_refuses_swapped_directory() {
+  local home id outside fakebin real_perl out status
+  home="$TMP_ROOT/publication-directory-swap-home"
+  id='brief-pub-directory-swap'
+  outside="$home/outside"
+  fakebin="$home/fakebin"
+  real_perl=$(command -v perl)
+  mkdir -p "$home/data/$id" "$outside" "$fakebin"
+  cat > "$fakebin/perl" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
+  mv -- "$FM_TEST_SWAP_PATH" "$FM_TEST_SWAP_PATH.moved"
+  ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
+  : > "$FM_TEST_SWAP_DONE"
+fi
+exec "$FM_REAL_PERL" "$@"
+SH
+  chmod +x "$fakebin/perl"
+
+  out=$(FM_TEST_SWAP_PATH="$home/data/$id" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$home/swap.done" FM_REAL_PERL="$real_perl" PATH="$fakebin:$PATH" \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a task directory swapped before publication must be refused"
+  assert_contains "$out" 'not a stable real directory' \
+    "the swapped task directory refusal did not explain the pinning boundary"
+  assert_absent "$outside/brief.md" "brief publication followed a swapped task directory"
+  assert_absent "$home/data/$id.moved/brief.md" "brief publication wrote after its task directory moved"
+  pass "fm-brief.sh: publication pins its task directory before staging"
+}
+
+test_brief_publication_refuses_swapped_data_directory() {
+  local home data id outside hookdir out status
+  home="$TMP_ROOT/publication-data-directory-swap-home"
+  data="$home/data"
+  id='brief-pub-data-directory-swap'
+  outside="$home/outside"
+  hookdir="$home/perl-hook"
+  mkdir -p "$data" "$outside" "$hookdir"
+  cat > "$hookdir/fm_test_parent_swap.pm" <<'PERL'
+package fm_test_parent_swap;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::chdir = sub {
+    my ($path) = @_;
+    if (defined $ENV{FM_TEST_SWAP_PATH} && $path eq $ENV{FM_TEST_SWAP_PATH} && !-e $ENV{FM_TEST_SWAP_DONE}) {
+      rename($path, "$path.moved") or die "rename $path: $!\n";
+      symlink($ENV{FM_TEST_SWAP_TARGET}, $path) or die "symlink $path: $!\n";
+      open my $done, '>', $ENV{FM_TEST_SWAP_DONE} or die "open swap marker: $!\n";
+    }
+    return CORE::chdir($path);
+  };
+}
+
+1;
+PERL
+
+  out=$(FM_TEST_SWAP_PATH="$data" FM_TEST_SWAP_TARGET="$outside" FM_TEST_SWAP_DONE="$home/swap.done" \
+    PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_parent_swap FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a data directory swapped after validation must be refused"
+  assert_contains "$out" 'not a stable real directory' \
+    "the swapped data directory refusal did not explain the pinning boundary"
+  assert_absent "$outside/$id/brief.md" "brief publication followed a swapped data directory"
+  assert_absent "$data.moved/$id/brief.md" "brief publication wrote after its data directory moved"
+  pass "fm-brief.sh: publication pins its data directory before task creation"
+}
+
+# Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
   FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-scout-q6 alpha --scout >/dev/null 2>&1 \
@@ -727,4 +967,10 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_brief_publication_refuses_special_and_existing_paths
+test_brief_publication_refuses_raced_final_path
+test_brief_publication_uses_unpredictable_staging_name
+test_brief_publication_rejects_swapped_staging_file
+test_brief_publication_refuses_swapped_directory
+test_brief_publication_refuses_swapped_data_directory
 test_scout_and_secondmate_scaffold
