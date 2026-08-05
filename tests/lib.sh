@@ -174,6 +174,24 @@ fm_write_secondmate_meta() {
 
 # --- common assertions ------------------------------------------------------
 
+# fm_run_with_deadline <seconds> <cmd...>: run cmd in the background and kill
+# it if it outlives the deadline, proving a code path cannot hang. Returns the
+# command's own status, or 137 when the deadline had to kill it - so asserting
+# an exact expected status doubles as the no-hang proof.
+fm_run_with_deadline() {
+  local seconds=$1 pid watcher status
+  shift
+  "$@" &
+  pid=$!
+  ( sleep "$seconds"; kill -9 "$pid" 2>/dev/null ) &
+  watcher=$!
+  wait "$pid" 2>/dev/null
+  status=$?
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  return "$status"
+}
+
 # assert_contains <haystack> <needle> <msg>
 assert_contains() {
   case "$1" in

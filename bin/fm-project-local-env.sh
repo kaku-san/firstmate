@@ -11,6 +11,11 @@
 # source is indeterminate rather than proof that a credential is missing.
 # An absent source file is allowed and contributes no matching key.
 # The lookup also checks the worker process environment.
+# Each source directory is pinned by device+inode identity from validation
+# through the read, so a hostile same-user rename/replace of a parent directory
+# fails closed instead of redirecting the read.
+# Sources open nonblocking and must be regular files, so a FIFO or other
+# special file fails the safety check immediately instead of hanging a reader.
 # For presence classification, a whitespace-delimited # suffix is an inline
 # comment; an empty, "", or '' assignment before that suffix remains absent.
 #
@@ -74,7 +79,7 @@ SOURCE_NAME=${FM_PROJECT_LOCAL_ENV_FILE:-.env.local}
 }
 
 canonical_dir() {
-  local label=$1 path=$2 resolved
+  local label=$1 path=$2
   case "$path" in
     /*) ;;
     *) error "$label must be an absolute canonical directory"; return 1 ;;
@@ -83,11 +88,25 @@ canonical_dir() {
     error "$label is not a real directory: $path"
     return 1
   }
-  resolved=$(CDPATH='' cd -P -- "$path" 2>/dev/null && pwd -P) || {
+  # Resolve and pin in one process: emit "<dev> <ino> <resolved-path>" so the
+  # scan can re-validate the identical directory inode at read time.
+  perl -MCwd=realpath -e '
+    my ($path) = @ARGV;
+    my $resolved = realpath($path) or exit 1;
+    my @s = stat($resolved) or exit 1;
+    exit 1 unless -d _;
+    printf "%d %d %s\n", $s[0], $s[1], $resolved;
+  ' "$path" || {
     error "cannot resolve $label: $path"
     return 1
   }
-  printf '%s\n' "$resolved"
+}
+
+split_canonical_dir() {  # <output> -> sets DIR_DEV DIR_INO DIR_PATH
+  DIR_DEV=${1%% *}
+  local rest=${1#* }
+  DIR_INO=${rest%% *}
+  DIR_PATH=${rest#* }
 }
 
 PRIMARY_DIR=${FM_PRIMARY_PROJECT_DIR:-}
@@ -95,24 +114,36 @@ PRIMARY_DIR=${FM_PRIMARY_PROJECT_DIR:-}
   error 'FM_PRIMARY_PROJECT_DIR is required at the task boundary'
   exit 2
 }
-PRIMARY_DIR=$(canonical_dir FM_PRIMARY_PROJECT_DIR "$PRIMARY_DIR") || exit 2
+PRIMARY_OUT=$(canonical_dir FM_PRIMARY_PROJECT_DIR "$PRIMARY_DIR") || exit 2
+split_canonical_dir "$PRIMARY_OUT"
+PRIMARY_DIR=$DIR_PATH
+PRIMARY_DIR_DEV=$DIR_DEV
+PRIMARY_DIR_INO=$DIR_INO
 
 ISOLATED_DIR=${FM_PROJECT_LOCAL_ENV_ISOLATED_DIR:-}
 [ -n "$ISOLATED_DIR" ] || {
   error 'FM_PROJECT_LOCAL_ENV_ISOLATED_DIR is required at the task boundary'
   exit 2
 }
-ISOLATED_DIR=$(canonical_dir FM_PROJECT_LOCAL_ENV_ISOLATED_DIR "$ISOLATED_DIR") || exit 2
+ISOLATED_OUT=$(canonical_dir FM_PROJECT_LOCAL_ENV_ISOLATED_DIR "$ISOLATED_DIR") || exit 2
+split_canonical_dir "$ISOLATED_OUT"
+ISOLATED_DIR=$DIR_PATH
+ISOLATED_DIR_DEV=$DIR_DEV
+ISOLATED_DIR_INO=$DIR_INO
 
 PRIMARY_ENV_FILE="$PRIMARY_DIR/$SOURCE_NAME"
 ISOLATED_ENV_FILE="$ISOLATED_DIR/$SOURCE_NAME"
 
 scan_local_env_source() {
-  local label=$1 file=$2 output status
-  shift 2
+  local label=$1 dir=$2 dir_dev=$3 dir_ino=$4 file=$5 output status
+  shift 5
   if output=$(perl -MFcntl=:DEFAULT -MErrno=ENOENT -e '
-    my ($file, @keys) = @ARGV;
-    sysopen(my $source, $file, O_RDONLY | O_NOFOLLOW)
+    my ($directory, $want_dev, $want_ino, $name, @keys) = @ARGV;
+    exit 3 if -l $directory;
+    chdir($directory) or exit 3;
+    my @pinned = stat(".") or exit 3;
+    exit 3 unless $pinned[0] == $want_dev && $pinned[1] == $want_ino;
+    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
       or exit($! == ENOENT ? 1 : 2);
     stat($source) or exit 2;
     exit 2 unless -f _;
@@ -131,7 +162,7 @@ scan_local_env_source() {
     }
     exit 2 unless eof($source);
     print "$_\n" for grep { $found{$_} } @keys;
-  ' "$file" "$@"); then
+  ' "$dir" "$dir_dev" "$dir_ino" "$SOURCE_NAME" "$@"); then
     printf '%s' "$output"
     return 0
   else
@@ -139,19 +170,22 @@ scan_local_env_source() {
   fi
   case "$status" in
     1) return 1 ;;
+    3) error "$label directory is not a stable real directory: $dir"; return 2 ;;
     *) error "$label is not a safe regular file or is unreadable: $file"; return 2 ;;
   esac
 }
 
 PRIMARY_ENV_KEYS=
-if PRIMARY_ENV_KEYS=$(scan_local_env_source registered-primary-local-source "$PRIMARY_ENV_FILE" "$@"); then
+if PRIMARY_ENV_KEYS=$(scan_local_env_source registered-primary-local-source \
+  "$PRIMARY_DIR" "$PRIMARY_DIR_DEV" "$PRIMARY_DIR_INO" "$PRIMARY_ENV_FILE" "$@"); then
   :
 else
   file_status=$?
   [ "$file_status" = 1 ] || exit 2
 fi
 ISOLATED_ENV_KEYS=
-if ISOLATED_ENV_KEYS=$(scan_local_env_source isolated-local-source "$ISOLATED_ENV_FILE" "$@"); then
+if ISOLATED_ENV_KEYS=$(scan_local_env_source isolated-local-source \
+  "$ISOLATED_DIR" "$ISOLATED_DIR_DEV" "$ISOLATED_DIR_INO" "$ISOLATED_ENV_FILE" "$@"); then
   :
 else
   file_status=$?

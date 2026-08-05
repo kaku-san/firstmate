@@ -135,7 +135,10 @@
 # conclusions; no local environment value is copied, exported, or recorded.
 # Before endpoint creation, spawn adds the executable-owned boundary section to
 # a legacy ship/scout brief only through an atomic replacement of a non-symlink
-# regular single-linked brief.md inside the resolved task data directory.
+# regular single-linked brief.md inside the resolved task data directory, which
+# is pinned by device+inode identity from resolution through the write.
+# Sources open nonblocking, so a FIFO or other special brief file fails the
+# safety check immediately instead of hanging the reader.
 # An unsafe path or a brief that changes during the upgrade fails closed.
 # The path metadata is backend-neutral and is set in the task pane shell before
 # every supported harness launch.
@@ -1165,17 +1168,36 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+resolve_pinned_dir() {  # <label> <path> -> "<dev> <ino> <resolved-path>"
+  local label=$1 path=$2 resolved ids
+  resolved=$(CDPATH='' cd -P -- "$path" 2>/dev/null && pwd -P) || {
+    echo "error: $label cannot be resolved: $path" >&2
+    return 1
+  }
+  ids=$(perl -e 'my @s = stat($ARGV[0]) or exit 1; printf "%d %d", $s[0], $s[1];' "$resolved") || {
+    echo "error: $label cannot be pinned: $resolved" >&2
+    return 1
+  }
+  printf '%s %s\n' "$ids" "$resolved"
+}
+split_pinned_dir() {  # <output> -> sets PIN_DEV PIN_INO PIN_PATH
+  PIN_DEV=${1%% *}
+  local rest=${1#* }
+  PIN_INO=${rest%% *}
+  PIN_PATH=${rest#* }
+}
 upgrade_legacy_brief() {
-  local task_dir task_dir_real brief_dir_real brief_name local_env_section status
+  local task_dir task_dir_out brief_dir_out task_dir_real brief_dir_real brief_name local_env_section status
+  local task_dir_dev task_dir_ino
   task_dir="$DATA/$ID"
-  task_dir_real=$(CDPATH='' cd -P -- "$task_dir" 2>/dev/null && pwd -P) || {
-    echo "error: task data directory cannot be resolved: $task_dir" >&2
-    return 1
-  }
-  brief_dir_real=$(CDPATH='' cd -P -- "$(dirname "$BRIEF")" 2>/dev/null && pwd -P) || {
-    echo "error: task brief directory cannot be resolved: $(dirname "$BRIEF")" >&2
-    return 1
-  }
+  task_dir_out=$(resolve_pinned_dir "task data directory" "$task_dir") || return 1
+  split_pinned_dir "$task_dir_out"
+  task_dir_real=$PIN_PATH
+  task_dir_dev=$PIN_DEV
+  task_dir_ino=$PIN_INO
+  brief_dir_out=$(resolve_pinned_dir "task brief directory" "$(dirname "$BRIEF")") || return 1
+  split_pinned_dir "$brief_dir_out"
+  brief_dir_real=$PIN_PATH
   [ "$brief_dir_real" = "$task_dir_real" ] || {
     echo "error: task brief is outside resolved task data directory: $BRIEF" >&2
     return 1
@@ -1190,10 +1212,13 @@ upgrade_legacy_brief() {
     return 1
   }
   if perl -MFcntl=:DEFAULT -MCwd=getcwd -MIO::Handle -e '
-    my ($directory, $name, $section) = @ARGV;
+    my ($directory, $want_dev, $want_ino, $name, $section) = @ARGV;
+    exit 6 if -l $directory;
     chdir($directory) or exit 3;
     exit 3 unless getcwd() eq $directory;
-    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW) or exit 3;
+    my @pinned_stat = stat(".") or exit 6;
+    exit 6 unless $pinned_stat[0] == $want_dev && $pinned_stat[1] == $want_ino;
+    sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 3;
     my @source_stat = stat($source) or exit 3;
     exit 3 unless -f _ && $source_stat[3] == 1;
     my $marker = q{Before concluding that a named credential or configuration is absent, run `"$FM_PROJECT_LOCAL_ENV_CHECK" check <KEY> [<KEY>...]`};
@@ -1234,7 +1259,7 @@ upgrade_legacy_brief() {
     }
     rename($temporary, $name) or do { unlink($temporary); exit 5 };
     undef $temporary;
-  ' "$task_dir_real" "$brief_name" "$local_env_section"; then
+  ' "$task_dir_real" "$task_dir_dev" "$task_dir_ino" "$brief_name" "$local_env_section"; then
     return 0
   else
     status=$?
@@ -1245,6 +1270,9 @@ upgrade_legacy_brief() {
       ;;
     4)
       echo "error: task brief changed during safe legacy upgrade: $BRIEF" >&2
+      ;;
+    6)
+      echo "error: task data directory is not a stable real directory during safe legacy upgrade: $task_dir" >&2
       ;;
     *)
       echo "error: could not atomically add the project-local configuration boundary to $BRIEF" >&2

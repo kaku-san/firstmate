@@ -54,7 +54,12 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
-# Refuses to overwrite an existing brief.
+# Refuses to overwrite an existing brief. Publication stages the brief in a
+# private same-directory file and renames it into place, so a hostile same-user
+# path swap can never turn the write into a write-through: the rename replaces
+# whatever sits at the brief path instead of following it, and any pre-existing
+# path (regular file, symlink, or special file such as a FIFO) is refused
+# before anything is opened.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -167,8 +172,35 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
 fi
 
 BRIEF="$DATA/$ID/brief.md"
-[ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
+{ [ -e "$BRIEF" ] || [ -L "$BRIEF" ]; } && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
+
+# Publish through a private same-directory staging file and an atomic rename.
+# The final rename replaces whatever a same-user adversary swapped in at the
+# brief path rather than writing through it, and the refusal re-check keeps the
+# no-overwrite contract across the staging window.
+publish_brief() {
+  local staging
+  staging=$(mktemp "$DATA/$ID/.brief.md.pending.XXXXXX") || {
+    echo "error: cannot stage brief in $DATA/$ID" >&2
+    return 1
+  }
+  if ! cat > "$staging"; then
+    rm -f "$staging"
+    echo "error: cannot write staged brief for $BRIEF" >&2
+    return 1
+  fi
+  if [ -e "$BRIEF" ] || [ -L "$BRIEF" ]; then
+    rm -f "$staging"
+    echo "error: $BRIEF already exists" >&2
+    return 1
+  fi
+  mv -f "$staging" "$BRIEF" || {
+    rm -f "$staging"
+    echo "error: cannot publish brief to $BRIEF" >&2
+    return 1
+  }
+}
 
 shell_quote() {
   printf "'"
@@ -199,7 +231,7 @@ else
   PROJECT_CLONES_BODY=$(printf '%s\n' "$SECONDMATE_PROJECTS" | tr ' ' '\n' | sed 's/^/- /')
   PROJECT_CLONES_NOTE="The projects above are local clones for work you supervise; they are not an exclusive ownership claim."
 fi
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
 
 # Charter
@@ -300,7 +332,7 @@ fi
 LOCAL_ENV_SECTION=$("$SCRIPT_DIR/fm-project-local-env.sh" brief-section)
 
 if [ "$KIND" = scout ]; then
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
@@ -411,7 +443,7 @@ esac
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
-cat > "$BRIEF" <<EOF
+publish_brief <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task

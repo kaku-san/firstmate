@@ -689,6 +689,57 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
+# Publication must refuse any pre-existing brief path - a regular file, a
+# symlink (including a dangling one), or a special file such as a FIFO - before
+# anything is opened, and the staging file must never linger after a refusal or
+# a successful publish.
+test_brief_publication_refuses_special_and_existing_paths() {
+  local home id out status target
+  home="$TMP_ROOT/publication-home"
+  mkdir -p "$home/data"
+
+  id='brief-pub-existing'
+  mkdir -p "$home/data/$id"
+  printf 'pre-existing brief\n' > "$home/data/$id/brief.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "an existing brief must still be refused"
+  assert_contains "$out" 'already exists' "existing brief refusal lost its message"
+  [ "$(cat "$home/data/$id/brief.md")" = 'pre-existing brief' ] || \
+    fail "the pre-existing brief was overwritten"
+
+  id='brief-pub-symlink'
+  mkdir -p "$home/data/$id"
+  target="$home/data/$id/outside-target.md"
+  ln -s "$target" "$home/data/$id/brief.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a dangling symlink at the brief path must be refused"
+  assert_contains "$out" 'already exists' "dangling symlink refusal lost its message"
+  assert_absent "$target" "the scaffold wrote through a dangling brief symlink"
+  [ -L "$home/data/$id/brief.md" ] || fail "the refusal replaced the planted symlink"
+
+  id='brief-pub-fifo'
+  mkdir -p "$home/data/$id"
+  mkfifo "$home/data/$id/brief.md"
+  out=$(fm_run_with_deadline 10 env FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a FIFO at the brief path must be refused without hanging"
+  assert_contains "$out" 'already exists' "FIFO refusal lost its message"
+  [ -p "$home/data/$id/brief.md" ] || fail "the refusal replaced the planted FIFO"
+
+  id='brief-pub-clean'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "a clean scaffold should still publish"
+  assert_present "$home/data/$id/brief.md" "clean scaffold did not publish the brief"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "brief publication left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication refuses existing/symlink/special paths and never leaves staging"
+}
+
+# Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
   FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-scout-q6 alpha --scout >/dev/null 2>&1 \
@@ -727,4 +778,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_brief_publication_refuses_special_and_existing_paths
 test_scout_and_secondmate_scaffold
