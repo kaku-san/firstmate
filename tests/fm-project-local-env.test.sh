@@ -641,6 +641,41 @@ test_spawn_rejects_swapped_task_data_directory() {
   pass "legacy brief upgrade pins the task data directory against a parent swap"
 }
 
+test_spawn_rejects_swapped_data_parent_directory() {
+  local case_dir home primary isolated outside swap_done log id fakebin out status
+  case_dir="$TMP_ROOT/swapped-data-parent-directory"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  log="$case_dir/tmux.log"
+  id=local-env-dataparent-z8
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$outside/$id"
+  fm_git_worktree "$primary" "$isolated" swapped-data-parent-directory
+  printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
+  printf '%s\n' 'outside brief remains unchanged' > "$outside/$id/brief.md"
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PHASE=resolve FM_TEST_SWAP_PATH="$home/data" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" \
+    FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "spawn should refuse a data parent directory swapped before task resolution"
+  assert_contains "$out" 'task data parent directory' \
+    "swapped data parent refusal did not explain the pinning boundary"
+  [ "$(cat "$outside/$id/brief.md")" = 'outside brief remains unchanged' ] || \
+    fail "swapped data parent redirected the legacy brief upgrade"
+  assert_absent "$log" "swapped data parent reached endpoint creation"
+  pass "legacy brief upgrade rejects a startup data parent replacement"
+}
+
 test_brief_carries_the_boundary_contract() {
   local home brief id
   home="$TMP_ROOT/brief"
@@ -674,5 +709,6 @@ test_spawn_rejects_hardlinked_legacy_brief
 test_spawn_rejects_swapped_legacy_brief
 test_spawn_rejects_fifo_legacy_brief
 test_spawn_rejects_swapped_task_data_directory
+test_spawn_rejects_swapped_data_parent_directory
 test_brief_carries_the_boundary_contract
 printf '# all fm-project-local-env tests passed\n'

@@ -193,6 +193,22 @@ resolve_directory_input() {
   printf '%s\n' "$resolved"
 }
 
+capture_pinned_directory_identity() {  # <path> -> "<dev> <ino>"
+  local path=$1
+  perl -e '
+    my ($path) = @ARGV;
+    my @leaf = lstat($path) or exit 1;
+    exit 1 if -l _;
+    exit 1 unless -d _;
+    my @validated = stat($path) or exit 1;
+    exit 1 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($path) or exit 1;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    printf "%d %d\n", $leaf[0], $leaf[1];
+  ' "$path"
+}
+
 FM_HOME=$(resolve_directory_input FM_HOME "$FM_HOME") || exit 1
 if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
   FM_STATE_OVERRIDE=$(resolve_directory_input FM_STATE_OVERRIDE "$FM_STATE_OVERRIDE") || exit 1
@@ -202,6 +218,12 @@ if [ -n "${FM_DATA_OVERRIDE:-}" ]; then
 fi
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+DATA_PIN=$(capture_pinned_directory_identity "$DATA") || {
+  echo "error: data directory is not a stable real directory: $DATA" >&2
+  exit 1
+}
+DATA_PIN_DEV=${DATA_PIN%% *}
+DATA_PIN_INO=${DATA_PIN#* }
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
@@ -1194,9 +1216,28 @@ split_pinned_dir() {  # <output> -> sets PIN_DEV PIN_INO PIN_PATH
   PIN_PATH=${rest#* }
 }
 upgrade_legacy_brief() {
-  local task_dir task_dir_out brief_dir_out task_dir_real brief_dir_real brief_name local_env_section status
+  (
+  local data_dir_out task_dir task_dir_out brief_dir_out task_dir_real brief_dir_real brief_name local_env_section status
   local task_dir_dev task_dir_ino
-  task_dir="$DATA/$ID"
+  data_dir_out=$(resolve_pinned_dir "task data parent directory" "$DATA") || return 1
+  split_pinned_dir "$data_dir_out"
+  [ "$PIN_DEV" = "$DATA_PIN_DEV" ] && [ "$PIN_INO" = "$DATA_PIN_INO" ] || {
+    echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
+    return 1
+  }
+  cd "$DATA" || {
+    echo "error: could not enter startup-pinned data directory: $DATA" >&2
+    return 1
+  }
+  if ! perl -e '
+    my ($want_dev, $want_ino) = @ARGV;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $want_dev && $pinned[1] == $want_ino && -d _;
+  ' "$DATA_PIN_DEV" "$DATA_PIN_INO"; then
+    echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
+    return 1
+  fi
+  task_dir="$ID"
   task_dir_out=$(resolve_pinned_dir "task data directory" "$task_dir") || return 1
   split_pinned_dir "$task_dir_out"
   task_dir_real=$PIN_PATH
@@ -1290,6 +1331,7 @@ upgrade_legacy_brief() {
       ;;
   esac
   return 1
+  )
 }
 
 if [ "$KIND" != secondmate ]; then
