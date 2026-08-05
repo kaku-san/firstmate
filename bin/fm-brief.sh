@@ -172,8 +172,6 @@ if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
 fi
 
 BRIEF="$DATA/$ID/brief.md"
-{ [ -e "$BRIEF" ] || [ -L "$BRIEF" ]; } && { echo "error: $BRIEF already exists" >&2; exit 1; }
-mkdir -p "$DATA/$ID"
 
 # Publish through a private same-directory staging file and an atomic rename.
 # The final rename replaces whatever a same-user adversary swapped in at the
@@ -182,15 +180,23 @@ mkdir -p "$DATA/$ID"
 publish_brief() {
   local status
   if perl -MFcntl=:DEFAULT -MIO::Handle -e '
-    my ($directory, $name) = @ARGV;
-    my @leaf = lstat($directory) or exit 2;
-    exit 2 if -l _;
-    exit 2 unless -d _;
-    my @validated = stat($directory) or exit 2;
-    exit 2 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
-    chdir($directory) or exit 2;
-    my @pinned = stat(q{.}) or exit 2;
-    exit 2 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    my ($data_directory, $task_id, $name) = @ARGV;
+    sub pin_directory {
+      my ($directory) = @_;
+      my @leaf = lstat($directory) or return;
+      return if -l _ || !-d _;
+      my @validated = stat($directory) or return;
+      return unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+      chdir($directory) or return;
+      my @pinned = stat(q{.}) or return;
+      return $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    }
+    pin_directory($data_directory) or exit 2;
+    if (!lstat($task_id)) {
+      exit 2 unless $!{ENOENT};
+      mkdir($task_id) or exit 2;
+    }
+    pin_directory($task_id) or exit 2;
     exit 3 if lstat($name);
     exit 4 unless $!{ENOENT};
     my $temporary;
@@ -214,7 +220,7 @@ publish_brief() {
     exit 4 unless $!{ENOENT};
     rename($temporary, $name) or exit 4;
     undef $temporary;
-  ' "$DATA/$ID" brief.md; then
+  ' "$DATA" "$ID" brief.md; then
     return 0
   else
     status=$?

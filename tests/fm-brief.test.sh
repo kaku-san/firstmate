@@ -771,6 +771,46 @@ SH
   pass "fm-brief.sh: publication pins its task directory before staging"
 }
 
+test_brief_publication_refuses_swapped_data_directory() {
+  local home data id outside hookdir out status
+  home="$TMP_ROOT/publication-data-directory-swap-home"
+  data="$home/data"
+  id='brief-pub-data-directory-swap'
+  outside="$home/outside"
+  hookdir="$home/perl-hook"
+  mkdir -p "$data" "$outside" "$hookdir"
+  cat > "$hookdir/fm_test_parent_swap.pm" <<'PERL'
+package fm_test_parent_swap;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::chdir = sub {
+    my ($path) = @_;
+    if (defined $ENV{FM_TEST_SWAP_PATH} && $path eq $ENV{FM_TEST_SWAP_PATH} && !-e $ENV{FM_TEST_SWAP_DONE}) {
+      rename($path, "$path.moved") or die "rename $path: $!\n";
+      symlink($ENV{FM_TEST_SWAP_TARGET}, $path) or die "symlink $path: $!\n";
+      open my $done, '>', $ENV{FM_TEST_SWAP_DONE} or die "open swap marker: $!\n";
+    }
+    return CORE::chdir($path);
+  };
+}
+
+1;
+PERL
+
+  out=$(FM_TEST_SWAP_PATH="$data" FM_TEST_SWAP_TARGET="$outside" FM_TEST_SWAP_DONE="$home/swap.done" \
+    PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_parent_swap FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a data directory swapped after validation must be refused"
+  assert_contains "$out" 'not a stable real directory' \
+    "the swapped data directory refusal did not explain the pinning boundary"
+  assert_absent "$outside/$id/brief.md" "brief publication followed a swapped data directory"
+  assert_absent "$data.moved/$id/brief.md" "brief publication wrote after its data directory moved"
+  pass "fm-brief.sh: publication pins its data directory before task creation"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -812,4 +852,5 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_brief_publication_refuses_special_and_existing_paths
 test_brief_publication_refuses_swapped_directory
+test_brief_publication_refuses_swapped_data_directory
 test_scout_and_secondmate_scaffold
