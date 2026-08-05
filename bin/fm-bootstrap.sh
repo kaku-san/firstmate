@@ -52,16 +52,16 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.31.2.
+#          The AXI-family floor policy is owned beside GH_AXI_MIN and
+#          LAVISH_AXI_MIN below; the per-tool owners point there. An installed
+#          build below its floor reports MISSING like no-mistakes, so the operator
+#          is asked to upgrade rather than silently running an older tool.
+#          tasks-axi feature probes remain a separate defense-in-depth check.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
-#          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
-#          with update --archive-body and mv [<id>...]); an installed but
-#          incompatible build reports MISSING like no-mistakes. A compatible
-#          tasks-axi default backend is silent. quota-axi is required for the
-#          agent-owned dispatch-profile array procedure in AGENTS.md section 4
-#          and .agents/skills/quota-array-dispatch/SKILL.md, and is also version
-#          gated by fm-quota-axi-lib.sh, which owns that floor and its rationale.
-#          An older build reports MISSING like no-mistakes rather than passing
-#          silently while emitting auth semantics dispatch cannot scope.
+#          lavish-axi). A compatible tasks-axi default backend is silent.
+#          quota-axi is required for the agent-owned dispatch-profile array
+#          procedure in AGENTS.md section 4 and
+#          .agents/skills/quota-array-dispatch/SKILL.md.
 #          On a primary home, the locked mutable path materializes the visible
 #          default config/startup-memory-budget=7500 when absent. It never
 #          guesses at malformed or unsafe existing files, and secondmate homes
@@ -120,6 +120,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-remote-readiness-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 
 fleet_sync_origin_backed_project_count() {
   local count proj
@@ -457,7 +459,7 @@ secondmate_sync() {
     fi
     nudge_needed=0
     converged=1
-    if sync_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh sync "$id" 2>&1); then
+    if sync_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh sync "$id" < /dev/null 2>&1); then
       case "$sync_out" in synced:*) nudge_needed=1 ;; esac
     else
       echo "SECONDMATE_SYNC: secondmate $id: skipped: remote tracked-file sync failed on $remote_host: $(first_line "$sync_out")"
@@ -500,7 +502,7 @@ secondmate_liveness_sweep() {
   # primary-only no-op there. Mid-session liveness remains explicitly out of
   # scope and requires a separate periodic signal.
   [ -d "$STATE" ] || return 0
-  local meta id window harness backend target agent_state out cause remote_host remote_rc
+  local meta id window harness backend target agent_state out cause remote_host remote_rc readiness_reason route_out remote_backend
   SECONDMATE_RESPAWNED_IDS=""
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
@@ -511,7 +513,21 @@ secondmate_liveness_sweep() {
     harness=$(fm_meta_get "$meta" harness)
     remote_host=$(fm_meta_get "$meta" remote_host)
     if [ -n "$remote_host" ]; then
-      if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" 2>/dev/null); then
+      remote_rc=0
+      fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || remote_rc=$?
+      if [ "$remote_rc" -eq 255 ]; then
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote host unavailable or endpoint state unknown; route preserved on $remote_host"
+        continue
+      fi
+      if [ "$remote_rc" -ne 0 ]; then
+        readiness_reason=$(printf '%s\n' "$FM_REMOTE_READINESS_OUT" \
+          | awk '/^check [^=]+=(fixable|human):|^action:|^error:/ { print; exit }')
+        [ -n "$readiness_reason" ] || readiness_reason=$(first_line "$FM_REMOTE_READINESS_OUT")
+        [ -n "$readiness_reason" ] || readiness_reason="unknown readiness failure"
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote readiness failed on $remote_host: $readiness_reason"
+        continue
+      fi
+      if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh state "$id" < /dev/null 2>/dev/null); then
         remote_rc=0
       else
         remote_rc=$?
@@ -527,6 +543,24 @@ secondmate_liveness_sweep() {
       agent_state=$(printf '%s\n' "$out" | tail -1)
       case "$agent_state" in
         alive)
+          if route_out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh route "$id" < /dev/null 2>/dev/null); then
+            remote_rc=0
+          else
+            remote_rc=$?
+          fi
+          if [ "$remote_rc" -eq 255 ]; then
+            echo "SECONDMATE_LIVENESS: secondmate $id: skipped: remote host unavailable or endpoint route unknown; route preserved on $remote_host"
+            continue
+          fi
+          if [ "$remote_rc" -ne 0 ]; then
+            echo "SECONDMATE_LIVENESS: secondmate $id: skipped: alive remote endpoint route is unreadable on $remote_host; inspect and migrate or retire it explicitly"
+            continue
+          fi
+          remote_backend=$(printf '%s\n' "$route_out" | sed -n 's/^backend=//p' | tail -1)
+          if [ "$remote_backend" != herdr ]; then
+            echo "SECONDMATE_LIVENESS: secondmate $id: skipped: alive remote endpoint is recorded on backend '${remote_backend:-missing}'; migrate or retire it explicitly"
+            continue
+          fi
           [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" != 1 ] || echo "BOOTSTRAP_INFO: remote secondmate $id already live (host=$remote_host)"
           ;;
         dead|missing)
@@ -656,6 +690,15 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
+# AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
+# version of that tool, captain-bumped periodically to keep the whole fleet on the
+# newest axi tools. It is NOT the minimum feature-introduced version. These floors
+# are expected to drift upward as new versions ship. Never lower a floor to the
+# earliest release that happens to satisfy some depended-on behavior. The
+# tasks-axi feature probes are an independent defense-in-depth concern, not part
+# of its floor.
+GH_AXI_MIN=0.1.29
+LAVISH_AXI_MIN=0.1.45
 
 treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
@@ -994,6 +1037,12 @@ if fm_backend_list_contains "$TOOLS" treehouse \
 fi
 if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
   echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+fi
+if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
+  echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
+fi
+if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
+  echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
 fi
 if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
   echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
