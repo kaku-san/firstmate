@@ -501,14 +501,14 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::link = sub {
+  *CORE::GLOBAL::rename = sub {
     my ($source, $destination) = @_;
     if ($source =~ /^\.brief\.md\.fm-/) {
       open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
       print {$record} "$source\n" or die "write staging record: $!\n";
       close $record or die "close staging record: $!\n";
     }
-    return CORE::link($source, $destination);
+    return CORE::rename($source, $destination);
   };
 }
 
@@ -551,7 +551,7 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::link = sub {
+  *CORE::GLOBAL::rename = sub {
     my ($source, $destination) = @_;
     if ($source =~ /^\.brief\.md\.fm-/) {
       unlink($source) or die "unlink staging: $!\n";
@@ -559,7 +559,7 @@ BEGIN {
       print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
       close $replacement or die "close staging replacement: $!\n";
     }
-    return CORE::link($source, $destination);
+    return CORE::rename($source, $destination);
   };
 }
 
@@ -584,6 +584,68 @@ PERL
     fail "swapped legacy staging refusal left a staging file behind"
   fi
   pass "legacy brief upgrade rejects a staging-file swap"
+}
+
+test_spawn_replaces_raced_legacy_final_atomically() {
+  local case_dir home primary isolated log pending worker_log worker_status
+  local id fakebin hookdir out status
+  case_dir="$TMP_ROOT/raced-legacy-final"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
+  id=local-env-raced-final-z4
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" raced-legacy-final
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_raced_final.pm" <<'PERL'
+package fm_test_raced_final;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::rename = sub {
+    my ($source, $destination) = @_;
+    if ($source =~ /^\.brief\.md\.fm-/ && $destination eq q{brief.md}) {
+      open my $raced, q{>}, $destination or die "open raced brief: $!\n";
+      print {$raced} "attacker brief\n" or die "write raced brief: $!\n";
+      close $raced or die "close raced brief: $!\n";
+    }
+    return CORE::rename($source, $destination);
+  };
+  *CORE::GLOBAL::unlink = sub {
+    my ($path) = @_;
+    die "legacy final was unlinked\n" if $path eq q{brief.md};
+    return CORE::unlink($path);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_raced_final \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" \
+    TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "a raced legacy final should be atomically replaced: $out"
+  assert_grep '# Project-local configuration boundary' "$home/data/$id/brief.md" \
+    "atomic legacy replacement did not publish the upgraded brief"
+  assert_no_grep 'attacker brief' "$home/data/$id/brief.md" \
+    "raced final content survived the atomic legacy replacement"
+  assert_present "$log" "atomic legacy replacement did not reach endpoint creation"
+  pass "legacy brief upgrade atomically replaces a raced final path"
 }
 
 test_spawn_rejects_symlinked_legacy_brief() {
@@ -814,6 +876,7 @@ test_parent_directory_swap_during_resolution_stops_safely
 test_spawn_worker_resolves_primary_local_presence
 test_spawn_legacy_upgrade_uses_unpredictable_staging_name
 test_spawn_rejects_swapped_legacy_staging_file
+test_spawn_replaces_raced_legacy_final_atomically
 test_spawn_rejects_symlinked_legacy_brief
 test_spawn_rejects_hardlinked_legacy_brief
 test_spawn_rejects_swapped_legacy_brief
