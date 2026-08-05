@@ -776,6 +776,40 @@ PERL
   pass "fm-brief.sh: publication preserves a concurrently created brief"
 }
 
+test_brief_publication_uses_unpredictable_staging_name() {
+  local home id hookdir stage_name
+  home="$TMP_ROOT/publication-random-stage-home"
+  id='brief-pub-random-stage'
+  hookdir="$home/perl-hook"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_staging_name.pm" <<'PERL'
+package fm_test_staging_name;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
+    print {$record} "$source\n" or die "write staging record: $!\n";
+    close $record or die "close staging record: $!\n";
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+
+  FM_TEST_STAGING_NAME="$home/staging-name" PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" \
+    PERL5OPT=-Mfm_test_staging_name FM_HOME="$home" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "a clean scaffold should publish through a private staging file"
+  stage_name=$(cat "$home/staging-name")
+  printf '%s\n' "$stage_name" | LC_ALL=C grep -Eq '^\.brief\.md\.pending\.[0-9a-f]{64}$' \
+    || fail "brief publication did not use an unguessable private staging name: $stage_name"
+  pass "fm-brief.sh: publication uses an unguessable private staging name"
+}
+
 test_brief_publication_refuses_swapped_directory() {
   local home id outside fakebin real_perl out status
   home="$TMP_ROOT/publication-directory-swap-home"
@@ -889,6 +923,7 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_brief_publication_refuses_special_and_existing_paths
 test_brief_publication_refuses_raced_final_path
+test_brief_publication_uses_unpredictable_staging_name
 test_brief_publication_refuses_swapped_directory
 test_brief_publication_refuses_swapped_data_directory
 test_scout_and_secondmate_scaffold

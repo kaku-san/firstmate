@@ -478,6 +478,60 @@ test_spawn_worker_resolves_primary_local_presence() {
   pass "isolated worker resolves primary-local presence through path-only metadata"
 }
 
+test_spawn_legacy_upgrade_uses_unpredictable_staging_name() {
+  local case_dir home primary isolated log pending worker_log worker_status
+  local fakebin id hookdir stage_name out status
+  case_dir="$TMP_ROOT/spawn-random-stage"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
+  id=local-env-random-stage-z2
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" spawn-random-stage
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_staging_name.pm" <<'PERL'
+package fm_test_staging_name;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::rename = sub {
+    my ($source, $destination) = @_;
+    if ($source =~ /^\.brief\.md\.fm-/) {
+      open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
+      print {$record} "$source\n" or die "write staging record: $!\n";
+      close $record or die "close staging record: $!\n";
+    }
+    return CORE::rename($source, $destination);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(FM_TEST_STAGING_NAME="$case_dir/staging-name" PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" \
+    PERL5OPT=-Mfm_test_staging_name FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "spawn should upgrade a legacy brief through private staging: $out"
+  stage_name=$(cat "$case_dir/staging-name")
+  printf '%s\n' "$stage_name" | LC_ALL=C grep -Eq '^\.brief\.md\.fm-[0-9a-f]{64}$' \
+    || fail "legacy brief upgrade did not use an unguessable private staging name: $stage_name"
+  pass "legacy brief upgrade uses an unguessable private staging name"
+}
+
 test_spawn_rejects_symlinked_legacy_brief() {
   local case_dir home primary isolated outside target log id fakebin out status
   case_dir="$TMP_ROOT/symlinked-legacy-brief"
@@ -704,6 +758,7 @@ test_special_local_sources_are_rejected_without_hanging
 test_parent_directory_swap_stops_safely
 test_parent_directory_swap_during_resolution_stops_safely
 test_spawn_worker_resolves_primary_local_presence
+test_spawn_legacy_upgrade_uses_unpredictable_staging_name
 test_spawn_rejects_symlinked_legacy_brief
 test_spawn_rejects_hardlinked_legacy_brief
 test_spawn_rejects_swapped_legacy_brief

@@ -195,14 +195,34 @@ publish_brief() {
     pin_directory($task_id) or exit 2;
     exit 3 if lstat($name);
     exit 4 unless $!{ENOENT};
+    sub open_private_staging {
+      my ($prefix) = @_;
+      sysopen(my $random, q{/dev/urandom}, O_RDONLY) or return;
+      for (1 .. 100) {
+        my $bytes = q{};
+        while (length($bytes) < 32) {
+          my $read = read($random, my $chunk, 32 - length($bytes));
+          unless (defined($read) && $read > 0) {
+            close($random);
+            return;
+          }
+          $bytes .= $chunk;
+        }
+        my $temporary = $prefix . unpack(q{H*}, $bytes);
+        if (sysopen(my $output, $temporary,
+          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600)) {
+          close($random) or do { close($output); unlink($temporary); return };
+          return ($temporary, $output);
+        }
+        last unless $!{EEXIST};
+      }
+      close($random);
+      return;
+    }
     my $temporary;
     END { unlink($temporary) if defined $temporary }
     my $output;
-    for my $attempt (1 .. 100) {
-      $temporary = sprintf ".brief.md.pending.%d.%d.%d", $$, time, $attempt;
-      last if sysopen($output, $temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-      undef $output;
-    }
+    ($temporary, $output) = open_private_staging(q{.brief.md.pending.});
     exit 4 unless $output;
     while (1) {
       my $read = read(STDIN, my $buffer, 65536);
@@ -211,7 +231,14 @@ publish_brief() {
       print {$output} $buffer or exit 4;
     }
     $output->sync or exit 4;
+    my @temporary_stat = stat($output) or exit 4;
     close($output) or exit 4;
+    my @temporary_name_stat = lstat($temporary);
+    unless (@temporary_name_stat && $temporary_name_stat[0] == $temporary_stat[0]
+      && $temporary_name_stat[1] == $temporary_stat[1] && $temporary_name_stat[3] == 1) {
+      unlink($temporary);
+      exit 4;
+    }
     link($temporary, $name) or exit($!{EEXIST} ? 3 : 4);
     unlink($temporary) or exit 4;
     undef $temporary;
