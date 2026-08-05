@@ -30,10 +30,12 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
-#   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
-#                              cleanup flushes WHILE state/.afk is still present,
+#   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon while
+#                              state/.afk is still present so cleanup can flush;
 #                              wait for it, close the recorded terminal by exact
-#                              id, then clear state/.afk last.
+#                              id, then clear state/.afk last on successful
+#                              shutdown. If the daemon misses the bounded wait,
+#                              preserve state/.afk and offered recovery state.
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #

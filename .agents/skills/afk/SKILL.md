@@ -203,7 +203,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
   text firstmate sees is clean.
 - **Portable singleton lock** - the daemon uses the repo's portable lock helper
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
-- **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
+- **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths route escalatable terminal results through shared result identities so the same result surfaces only once across signal, heartbeat scan, and path-growth ordering changes.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring
@@ -225,7 +225,8 @@ the operational prefix lets firstmate distinguish it from a real captain message
 Treat the escalation buffer, its delivery reservation or offer, and its wedge evidence as session-scoped delivery artifacts, not as the durable work record.
 The headers of `bin/fm-afk-start.sh`, `bin/fm-afk-launch.sh`, `bin/fm-afk-return.sh`, and `bin/fm-supervise-daemon.sh` own their exact paths and lifecycle mechanics.
 Always enter through `bin/fm-afk-launch.sh`, which clears prior-session artifacts only for a fresh entry and preserves the current session's buffer on refresh.
-Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's shutdown flush and clears it last.
+Always exit through `bin/fm-afk-launch.sh stop`, which keeps `state/.afk` present through the daemon's best-effort shutdown flush and clears it last on successful exit.
+If the daemon does not exit in the bounded SIGTERM wait window, `stop` preserves `state/.afk` and offered recoverable escalation state for manual follow-up.
 `docs/herdr-backend.md` "Away-mode supervisor support" owns the current mechanism, and `docs/verification/runtime-backends.md` "Away-mode transport" owns active evidence.
 
 ## Reliability properties
