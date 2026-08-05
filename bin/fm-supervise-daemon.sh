@@ -837,7 +837,7 @@ escalate_flush() {  # <state>
   # Join buffered items with the literal " | " separator into one digest line.
   # Logical-result rows carry an internal identity before a tab; strip it from
   # the captain-facing digest while retaining it for crash-safe deduplication.
-  msg=$(awk -F '\t' 'NR>1{printf " | "} {if (index($0,"\t")) printf "%s",$2; else printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
+  msg=$(awk -F '\t' 'NR>1{printf " | "} {if (index($0,"\t")) {if ($1 ~ /^result-(turn|status|check)\|/) printf "%s",$2; else printf "%s",$0} else printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
