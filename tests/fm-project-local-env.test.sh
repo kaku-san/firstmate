@@ -533,12 +533,16 @@ PERL
 }
 
 test_spawn_rejects_swapped_legacy_staging_file() {
-  local case_dir home primary isolated log id fakebin hookdir out status
+  local case_dir home primary isolated log pending worker_log worker_status
+  local id fakebin hookdir out status
   case_dir="$TMP_ROOT/swapped-legacy-staging"
   home="$case_dir/home"
   primary="$case_dir/primary"
   isolated="$case_dir/isolated"
   log="$case_dir/tmux.log"
+  pending="$case_dir/pending-launch"
+  worker_log="$case_dir/worker.log"
+  worker_status="$case_dir/worker.status"
   id=local-env-swapped-stage-z3
   hookdir="$case_dir/perl-hook"
   mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
@@ -551,7 +555,7 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::rename = sub {
+  sub swap_staging {
     my ($source, $destination) = @_;
     if ($source =~ /^\.brief\.md\.fm-/) {
       unlink($source) or die "unlink staging: $!\n";
@@ -560,7 +564,9 @@ BEGIN {
       close $replacement or die "close staging replacement: $!\n";
     }
     return CORE::rename($source, $destination);
-  };
+  }
+  *CORE::GLOBAL::rename = \&swap_staging;
+  *main::rename = \&swap_staging;
 }
 
 1;
@@ -571,6 +577,8 @@ PERL
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_FAKE_PENDING_LAUNCH="$pending" FM_FAKE_WORKER_LOG="$worker_log" \
+    FM_FAKE_WORKER_STATUS="$worker_status" \
     TMUX='fake,1,0' PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
     --mode no-mistakes --yolo off 2>&1)

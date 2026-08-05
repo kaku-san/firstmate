@@ -823,14 +823,16 @@ use strict;
 use warnings;
 
 BEGIN {
-  *main::link = sub {
+  sub swap_staging {
     my ($source, $destination) = @_;
     unlink($source) or die "unlink staging: $!\n";
     open my $replacement, '>', $source or die "open staging replacement: $!\n";
     print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
     close $replacement or die "close staging replacement: $!\n";
     return CORE::link($source, $destination);
-  };
+  }
+  *CORE::GLOBAL::link = \&swap_staging;
+  *main::link = \&swap_staging;
 }
 
 1;
