@@ -823,7 +823,7 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::link = sub {
+  *main::link = sub {
     my ($source, $destination) = @_;
     unlink($source) or die "unlink staging: $!\n";
     open my $replacement, '>', $source or die "open staging replacement: $!\n";

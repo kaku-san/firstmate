@@ -501,7 +501,7 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::rename = sub {
+  *main::rename = sub {
     my ($source, $destination) = @_;
     if ($source =~ /^\.brief\.md\.fm-/) {
       open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";

@@ -218,12 +218,6 @@ if [ -n "${FM_DATA_OVERRIDE:-}" ]; then
 fi
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
-DATA_PIN=$(capture_pinned_directory_identity "$DATA") || {
-  echo "error: data directory is not a stable real directory: $DATA" >&2
-  exit 1
-}
-DATA_PIN_DEV=${DATA_PIN%% *}
-DATA_PIN_INO=${DATA_PIN#* }
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
@@ -1217,11 +1211,17 @@ split_pinned_dir() {  # <output> -> sets PIN_DEV PIN_INO PIN_PATH
 }
 upgrade_legacy_brief() {
   (
-  local data_dir_out task_dir task_dir_out brief_dir_out task_dir_real brief_dir_real brief_name local_env_section status
-  local task_dir_dev task_dir_ino
+  local data_pin data_pin_dev data_pin_ino data_dir_out task_dir task_dir_out brief_dir_out
+  local task_dir_real brief_dir_real brief_name local_env_section status task_dir_dev task_dir_ino
+  data_pin=$(capture_pinned_directory_identity "$DATA") || {
+    echo "error: data directory is not a stable real directory: $DATA" >&2
+    return 1
+  }
+  data_pin_dev=${data_pin%% *}
+  data_pin_ino=${data_pin#* }
   data_dir_out=$(resolve_pinned_dir "task data parent directory" "$DATA") || return 1
   split_pinned_dir "$data_dir_out"
-  [ "$PIN_DEV" = "$DATA_PIN_DEV" ] && [ "$PIN_INO" = "$DATA_PIN_INO" ] || {
+  [ "$PIN_DEV" = "$data_pin_dev" ] && [ "$PIN_INO" = "$data_pin_ino" ] || {
     echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
     return 1
   }
@@ -1233,7 +1233,7 @@ upgrade_legacy_brief() {
     my ($want_dev, $want_ino) = @ARGV;
     my @pinned = stat(q{.}) or exit 1;
     exit 1 unless $pinned[0] == $want_dev && $pinned[1] == $want_ino && -d _;
-  ' "$DATA_PIN_DEV" "$DATA_PIN_INO"; then
+  ' "$data_pin_dev" "$data_pin_ino"; then
     echo "error: task data parent directory is not the startup-pinned data directory: $DATA" >&2
     return 1
   fi
