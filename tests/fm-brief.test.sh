@@ -810,6 +810,44 @@ PERL
   pass "fm-brief.sh: publication uses an unguessable private staging name"
 }
 
+test_brief_publication_rejects_swapped_staging_file() {
+  local home id hookdir out status brief
+  home="$TMP_ROOT/publication-swapped-stage-home"
+  id='brief-pub-swapped-stage'
+  hookdir="$home/perl-hook"
+  brief="$home/data/$id/brief.md"
+  mkdir -p "$home/data/$id" "$hookdir"
+  cat > "$hookdir/fm_test_swapped_staging.pm" <<'PERL'
+package fm_test_swapped_staging;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    unlink($source) or die "unlink staging: $!\n";
+    open my $replacement, '>', $source or die "open staging replacement: $!\n";
+    print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
+    close $replacement or die "close staging replacement: $!\n";
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_swapped_staging \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a swapped staging file must fail publication"
+  assert_contains "$out" 'cannot publish brief' "swapped staging refusal lost its message"
+  assert_absent "$brief" "swapped staging content was published as the brief"
+  if find "$home/data" -name '.brief.md.pending.*' | grep -q .; then
+    fail "swapped staging refusal left a staging file behind"
+  fi
+  pass "fm-brief.sh: publication rejects a staging-file swap"
+}
+
 test_brief_publication_refuses_swapped_directory() {
   local home id outside fakebin real_perl out status
   home="$TMP_ROOT/publication-directory-swap-home"
@@ -924,6 +962,7 @@ test_scout_and_secondmate_load_decision_hold_policy
 test_brief_publication_refuses_special_and_existing_paths
 test_brief_publication_refuses_raced_final_path
 test_brief_publication_uses_unpredictable_staging_name
+test_brief_publication_rejects_swapped_staging_file
 test_brief_publication_refuses_swapped_directory
 test_brief_publication_refuses_swapped_data_directory
 test_scout_and_secondmate_scaffold

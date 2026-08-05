@@ -501,14 +501,14 @@ use strict;
 use warnings;
 
 BEGIN {
-  *CORE::GLOBAL::rename = sub {
+  *CORE::GLOBAL::link = sub {
     my ($source, $destination) = @_;
     if ($source =~ /^\.brief\.md\.fm-/) {
       open my $record, '>', $ENV{FM_TEST_STAGING_NAME} or die "open staging record: $!\n";
       print {$record} "$source\n" or die "write staging record: $!\n";
       close $record or die "close staging record: $!\n";
     }
-    return CORE::rename($source, $destination);
+    return CORE::link($source, $destination);
   };
 }
 
@@ -530,6 +530,60 @@ PERL
   printf '%s\n' "$stage_name" | LC_ALL=C grep -Eq '^\.brief\.md\.fm-[0-9a-f]{64}$' \
     || fail "legacy brief upgrade did not use an unguessable private staging name: $stage_name"
   pass "legacy brief upgrade uses an unguessable private staging name"
+}
+
+test_spawn_rejects_swapped_legacy_staging_file() {
+  local case_dir home primary isolated log id fakebin hookdir out status
+  case_dir="$TMP_ROOT/swapped-legacy-staging"
+  home="$case_dir/home"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  log="$case_dir/tmux.log"
+  id=local-env-swapped-stage-z3
+  hookdir="$case_dir/perl-hook"
+  mkdir -p "$home/data/$id" "$home/state" "$home/config" "$hookdir"
+  fm_git_worktree "$primary" "$isolated" swapped-legacy-staging
+  write_dummy_env "$primary"
+  printf 'legacy brief\n' > "$home/data/$id/brief.md"
+  cat > "$hookdir/fm_test_swapped_staging.pm" <<'PERL'
+package fm_test_swapped_staging;
+use strict;
+use warnings;
+
+BEGIN {
+  *CORE::GLOBAL::link = sub {
+    my ($source, $destination) = @_;
+    if ($source =~ /^\.brief\.md\.fm-/) {
+      unlink($source) or die "unlink staging: $!\n";
+      open my $replacement, '>', $source or die "open staging replacement: $!\n";
+      print {$replacement} "attacker brief\n" or die "write staging replacement: $!\n";
+      close $replacement or die "close staging replacement: $!\n";
+    }
+    return CORE::link($source, $destination);
+  };
+}
+
+1;
+PERL
+  fakebin=$(write_spawn_fakebin "$case_dir/fake")
+
+  out=$(PERL5LIB="$hookdir${PERL5LIB:+:$PERL5LIB}" PERL5OPT=-Mfm_test_swapped_staging \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$isolated" FM_FAKE_LAUNCH_LOG="$log" \
+    TMUX='fake,1,0' PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$primary" "$fakebin/local-env-worker --check-boundary" \
+    --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "a swapped legacy staging file must be refused"
+  assert_contains "$out" 'could not atomically add' \
+    "swapped legacy staging refusal lost its message"
+  assert_absent "$home/data/$id/brief.md" "swapped staging content was published as the legacy brief"
+  assert_absent "$log" "swapped legacy staging reached endpoint creation"
+  if find "$home/data" -name '.brief.md.fm-*' | grep -q .; then
+    fail "swapped legacy staging refusal left a staging file behind"
+  fi
+  pass "legacy brief upgrade rejects a staging-file swap"
 }
 
 test_spawn_rejects_symlinked_legacy_brief() {
@@ -759,6 +813,7 @@ test_parent_directory_swap_stops_safely
 test_parent_directory_swap_during_resolution_stops_safely
 test_spawn_worker_resolves_primary_local_presence
 test_spawn_legacy_upgrade_uses_unpredictable_staging_name
+test_spawn_rejects_swapped_legacy_staging_file
 test_spawn_rejects_symlinked_legacy_brief
 test_spawn_rejects_hardlinked_legacy_brief
 test_spawn_rejects_swapped_legacy_brief

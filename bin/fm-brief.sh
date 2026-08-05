@@ -240,6 +240,12 @@ publish_brief() {
       exit 4;
     }
     link($temporary, $name) or exit($!{EEXIST} ? 3 : 4);
+    my @final_stat = lstat($name);
+    unless (@final_stat && $final_stat[0] == $temporary_stat[0]
+      && $final_stat[1] == $temporary_stat[1]) {
+      unlink($name);
+      exit 4;
+    }
     unlink($temporary) or exit 4;
     undef $temporary;
   ' "$DATA" "$ID" brief.md; then

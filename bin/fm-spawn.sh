@@ -134,7 +134,7 @@
 # The worker invokes the checker for presence-only credential/configuration
 # conclusions; no local environment value is copied, exported, or recorded.
 # Before endpoint creation, spawn adds the executable-owned boundary section to
-# a legacy ship/scout brief only through an atomic replacement of a non-symlink
+# a legacy ship/scout brief only through a no-replace atomic link handoff from a
 # regular single-linked brief.md inside the resolved task data directory, which
 # is pinned by device+inode identity from resolution through the write.
 # Sources open nonblocking, so a FIFO or other special brief file fails the
@@ -1335,7 +1335,15 @@ upgrade_legacy_brief() {
       unlink($temporary);
       exit 4;
     }
-    rename($temporary, $name) or do { unlink($temporary); exit 5 };
+    unlink($name) or do { unlink($temporary); exit 4 };
+    link($temporary, $name) or do { unlink($temporary); exit($!{EEXIST} ? 4 : 5) };
+    my @final_stat = lstat($name);
+    unless (@final_stat && $final_stat[0] == $temporary_stat[0]
+      && $final_stat[1] == $temporary_stat[1]) {
+      unlink($name);
+      exit 5;
+    }
+    unlink($temporary) or exit 5;
     undef $temporary;
   ' "$task_dir_real" "$task_dir_dev" "$task_dir_ino" "$brief_name" "$local_env_section"; then
     return 0
