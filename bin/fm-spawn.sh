@@ -1169,16 +1169,20 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 resolve_pinned_dir() {  # <label> <path> -> "<dev> <ino> <resolved-path>"
-  local label=$1 path=$2 resolved ids
-  resolved=$(CDPATH='' cd -P -- "$path" 2>/dev/null && pwd -P) || {
+  local label=$1 path=$2
+  # Resolve and pin in one process: a second, independent path lookup would let
+  # a rename land in between and pin the replacement's inode instead.
+  perl -MCwd=realpath -e '
+    my ($path) = @ARGV;
+    my $resolved = eval { realpath($path) };
+    exit 1 unless defined $resolved && length $resolved;
+    my @s = stat($resolved) or exit 1;
+    exit 1 unless -d _;
+    printf "%d %d %s\n", $s[0], $s[1], $resolved;
+  ' "$path" || {
     echo "error: $label cannot be resolved: $path" >&2
     return 1
   }
-  ids=$(perl -e 'my @s = stat($ARGV[0]) or exit 1; printf "%d %d", $s[0], $s[1];' "$resolved") || {
-    echo "error: $label cannot be pinned: $resolved" >&2
-    return 1
-  }
-  printf '%s %s\n' "$ids" "$resolved"
 }
 split_pinned_dir() {  # <output> -> sets PIN_DEV PIN_INO PIN_PATH
   PIN_DEV=${1%% *}

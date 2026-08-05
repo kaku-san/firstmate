@@ -178,12 +178,20 @@ fm_write_secondmate_meta() {
 # it if it outlives the deadline, proving a code path cannot hang. Returns the
 # command's own status, or 137 when the deadline had to kill it - so asserting
 # an exact expected status doubles as the no-hang proof.
+#
+# The command runs in its own process group (job control) so the deadline kills
+# descendants too, and the watcher holds no caller file descriptor: either one
+# left behind would keep a `$(fm_run_with_deadline ...)` pipe open and defeat
+# the bound the caller is asserting.
 fm_run_with_deadline() {
   local seconds=$1 pid watcher status
   shift
+  set -m
   "$@" &
   pid=$!
-  ( sleep "$seconds"; kill -9 "$pid" 2>/dev/null ) &
+  set +m
+  ( sleep "$seconds"; kill -9 -- "-$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null ) \
+    >/dev/null 2>&1 &
   watcher=$!
   wait "$pid" 2>/dev/null
   status=$?

@@ -150,16 +150,26 @@ test_multiline_process_environment_does_not_spoof_presence() {
   pass "process presence checks query only the requested variable"
 }
 
-write_race_perl() {
+# write_swap_perl <fakebin>: install a `perl` shim that once renames
+# FM_TEST_SWAP_PATH aside and leaves a symlink to FM_TEST_SWAP_TARGET in its
+# place - the same swap for a file or a directory. It fires only on the scan
+# invocation (`-MFcntl=:DEFAULT`), never on the earlier directory-resolution
+# perl, so the swap lands inside the resolve-to-open window the pinning closes
+# rather than before any resolution has happened.
+write_swap_perl() {
   local fakebin=$1
   cat > "$fakebin/perl" <<'SH'
 #!/usr/bin/env bash
 set -u
-if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
-  rm -f -- "$FM_TEST_SWAP_PATH"
-  ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
-  : > "$FM_TEST_SWAP_DONE"
-fi
+case " $* " in
+  *" -MFcntl=:DEFAULT "*)
+    if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
+      mv -- "$FM_TEST_SWAP_PATH" "$FM_TEST_SWAP_PATH.moved"
+      ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
+      : > "$FM_TEST_SWAP_DONE"
+    fi
+    ;;
+esac
 exec "$FM_REAL_PERL" "$@"
 SH
   chmod +x "$fakebin/perl"
@@ -177,7 +187,7 @@ test_local_source_swap_stops_safely() {
   printf '%s\n' 'PARALLEL_API_KEY=dummy-original-value' > "$primary/.env.local"
   printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside"
   fakebin=$(fm_fakebin "$case_dir/fake")
-  write_race_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$primary/.env.local" FM_TEST_SWAP_TARGET="$outside" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
@@ -194,6 +204,8 @@ test_local_source_swap_stops_safely() {
     "a swapped local source exposed a value"
   [ "$(cat "$outside")" = 'PARALLEL_API_KEY=dummy-outside-value' ] || \
     fail "the swapped local source target was modified"
+  [ "$(cat "$primary/.env.local.moved")" = 'PARALLEL_API_KEY=dummy-original-value' ] || \
+    fail "the swapped-away local source was modified"
   pass "local sources are opened once without following a replacement symlink"
 }
 
@@ -232,25 +244,6 @@ test_special_local_sources_are_rejected_without_hanging() {
   pass "FIFOs and other non-regular local sources are rejected promptly without hanging"
 }
 
-write_dir_swap_perl() {
-  local fakebin=$1
-  cat > "$fakebin/perl" <<'SH'
-#!/usr/bin/env bash
-set -u
-case " $* " in
-  *" -MFcntl=:DEFAULT "*)
-    if [ -n "${FM_TEST_SWAP_DIR:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
-      mv -- "$FM_TEST_SWAP_DIR" "$FM_TEST_SWAP_DIR.moved"
-      ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_DIR"
-      : > "$FM_TEST_SWAP_DONE"
-    fi
-    ;;
-esac
-exec "$FM_REAL_PERL" "$@"
-SH
-  chmod +x "$fakebin/perl"
-}
-
 test_parent_directory_swap_stops_safely() {
   local case_dir primary isolated outside swap_done fakebin out status
   case_dir="$TMP_ROOT/parent-directory-swap"
@@ -264,9 +257,9 @@ test_parent_directory_swap_stops_safely() {
   mkdir -p "$outside"
   printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside/.env.local"
   fakebin=$(fm_fakebin "$case_dir/fake")
-  write_dir_swap_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
-  out=$(FM_TEST_SWAP_DIR="$primary" FM_TEST_SWAP_TARGET="$outside" \
+  out=$(FM_TEST_SWAP_PATH="$primary" FM_TEST_SWAP_TARGET="$outside" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
     FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
     FM_PROJECT_LOCAL_ENV_FILE=.env.local \
@@ -534,7 +527,7 @@ test_spawn_rejects_swapped_legacy_brief() {
   printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
   printf '%s\n' 'outside brief remains unchanged' > "$target"
   fakebin=$(write_spawn_fakebin "$case_dir/fake")
-  write_race_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
   out=$(FM_TEST_SWAP_PATH="$home/data/$id/brief.md" FM_TEST_SWAP_TARGET="$target" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
@@ -597,9 +590,9 @@ test_spawn_rejects_swapped_task_data_directory() {
   printf '%s\n' 'legacy brief' > "$home/data/$id/brief.md"
   printf '%s\n' 'outside brief remains unchanged' > "$outside/brief.md"
   fakebin=$(write_spawn_fakebin "$case_dir/fake")
-  write_dir_swap_perl "$fakebin"
+  write_swap_perl "$fakebin"
 
-  out=$(FM_TEST_SWAP_DIR="$home/data/$id" FM_TEST_SWAP_TARGET="$outside" \
+  out=$(FM_TEST_SWAP_PATH="$home/data/$id" FM_TEST_SWAP_TARGET="$outside" \
     FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
