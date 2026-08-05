@@ -1170,15 +1170,18 @@ else
 fi
 resolve_pinned_dir() {  # <label> <path> -> "<dev> <ino> <resolved-path>"
   local label=$1 path=$2
-  # Resolve and pin in one process: a second, independent path lookup would let
-  # a rename land in between and pin the replacement's inode instead.
   perl -MCwd=realpath -e '
     my ($path) = @ARGV;
-    my $resolved = eval { realpath($path) };
-    exit 1 unless defined $resolved && length $resolved;
-    my @s = stat($resolved) or exit 1;
+    my @leaf = lstat($path) or exit 1;
+    exit 1 if -l _;
     exit 1 unless -d _;
-    printf "%d %d %s\n", $s[0], $s[1], $resolved;
+    my @validated = stat($path) or exit 1;
+    exit 1 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($path) or exit 1;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    my $resolved = realpath(q{.}) or exit 1;
+    printf "%d %d %s\n", $leaf[0], $leaf[1], $resolved;
   ' "$path" || {
     echo "error: $label cannot be resolved: $path" >&2
     return 1
@@ -1217,10 +1220,15 @@ upgrade_legacy_brief() {
   }
   if perl -MFcntl=:DEFAULT -MIO::Handle -e '
     my ($directory, $want_dev, $want_ino, $name, $section) = @ARGV;
-    exit 6 if -l $directory;
+    my @leaf = lstat($directory) or exit 6;
+    exit 6 if -l _;
+    exit 6 unless -d _;
+    my @validated = stat($directory) or exit 6;
+    exit 6 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    exit 6 unless $leaf[0] == $want_dev && $leaf[1] == $want_ino;
     chdir($directory) or exit 3;
     my @pinned_stat = stat(".") or exit 6;
-    exit 6 unless $pinned_stat[0] == $want_dev && $pinned_stat[1] == $want_ino;
+    exit 6 unless $pinned_stat[0] == $leaf[0] && $pinned_stat[1] == $leaf[1];
     sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or exit 3;
     my @source_stat = stat($source) or exit 3;
     exit 3 unless -f _ && $source_stat[3] == 1;

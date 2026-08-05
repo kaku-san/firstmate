@@ -88,14 +88,18 @@ canonical_dir() {
     error "$label is not a real directory: $path"
     return 1
   }
-  # Resolve and pin in one process: emit "<dev> <ino> <resolved-path>" so the
-  # scan can re-validate the identical directory inode at read time.
   perl -MCwd=realpath -e '
     my ($path) = @ARGV;
-    my $resolved = realpath($path) or exit 1;
-    my @s = stat($resolved) or exit 1;
+    my @leaf = lstat($path) or exit 1;
+    exit 1 if -l _;
     exit 1 unless -d _;
-    printf "%d %d %s\n", $s[0], $s[1], $resolved;
+    my @validated = stat($path) or exit 1;
+    exit 1 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($path) or exit 1;
+    my @pinned = stat(q{.}) or exit 1;
+    exit 1 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    my $resolved = realpath(q{.}) or exit 1;
+    printf "%d %d %s\n", $leaf[0], $leaf[1], $resolved;
   ' "$path" || {
     error "cannot resolve $label: $path"
     return 1
@@ -139,10 +143,15 @@ scan_local_env_source() {
   shift 5
   if output=$(perl -MFcntl=:DEFAULT -MErrno=ENOENT -e '
     my ($directory, $want_dev, $want_ino, $name, @keys) = @ARGV;
-    exit 3 if -l $directory;
+    my @leaf = lstat($directory) or exit 3;
+    exit 3 if -l _;
+    exit 3 unless -d _;
+    my @validated = stat($directory) or exit 3;
+    exit 3 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    exit 3 unless $leaf[0] == $want_dev && $leaf[1] == $want_ino;
     chdir($directory) or exit 3;
     my @pinned = stat(".") or exit 3;
-    exit 3 unless $pinned[0] == $want_dev && $pinned[1] == $want_ino;
+    exit 3 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
     sysopen(my $source, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
       or exit($! == ENOENT ? 1 : 2);
     stat($source) or exit 2;

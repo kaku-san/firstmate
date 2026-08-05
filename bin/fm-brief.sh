@@ -180,26 +180,51 @@ mkdir -p "$DATA/$ID"
 # brief path rather than writing through it, and the refusal re-check keeps the
 # no-overwrite contract across the staging window.
 publish_brief() {
-  local staging
-  staging=$(mktemp "$DATA/$ID/.brief.md.pending.XXXXXX") || {
-    echo "error: cannot stage brief in $DATA/$ID" >&2
-    return 1
-  }
-  if ! cat > "$staging"; then
-    rm -f "$staging"
-    echo "error: cannot write staged brief for $BRIEF" >&2
-    return 1
+  local status
+  if perl -MFcntl=:DEFAULT -MIO::Handle -e '
+    my ($directory, $name) = @ARGV;
+    my @leaf = lstat($directory) or exit 2;
+    exit 2 if -l _;
+    exit 2 unless -d _;
+    my @validated = stat($directory) or exit 2;
+    exit 2 unless $validated[0] == $leaf[0] && $validated[1] == $leaf[1] && -d _;
+    chdir($directory) or exit 2;
+    my @pinned = stat(q{.}) or exit 2;
+    exit 2 unless $pinned[0] == $leaf[0] && $pinned[1] == $leaf[1];
+    exit 3 if lstat($name);
+    exit 4 unless $!{ENOENT};
+    my $temporary;
+    END { unlink($temporary) if defined $temporary }
+    my $output;
+    for my $attempt (1 .. 100) {
+      $temporary = sprintf ".brief.md.pending.%d.%d.%d", $$, time, $attempt;
+      last if sysopen($output, $temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+      undef $output;
+    }
+    exit 4 unless $output;
+    while (1) {
+      my $read = read(STDIN, my $buffer, 65536);
+      exit 4 unless defined $read;
+      last if $read == 0;
+      print {$output} $buffer or exit 4;
+    }
+    $output->sync or exit 4;
+    close($output) or exit 4;
+    exit 3 if lstat($name);
+    exit 4 unless $!{ENOENT};
+    rename($temporary, $name) or exit 4;
+    undef $temporary;
+  ' "$DATA/$ID" brief.md; then
+    return 0
+  else
+    status=$?
   fi
-  if [ -e "$BRIEF" ] || [ -L "$BRIEF" ]; then
-    rm -f "$staging"
-    echo "error: $BRIEF already exists" >&2
-    return 1
-  fi
-  mv -f "$staging" "$BRIEF" || {
-    rm -f "$staging"
-    echo "error: cannot publish brief to $BRIEF" >&2
-    return 1
-  }
+  case "$status" in
+    2) echo "error: task brief directory is not a stable real directory: $DATA/$ID" >&2 ;;
+    3) echo "error: $BRIEF already exists" >&2 ;;
+    *) echo "error: cannot publish brief to $BRIEF" >&2 ;;
+  esac
+  return 1
 }
 
 shell_quote() {

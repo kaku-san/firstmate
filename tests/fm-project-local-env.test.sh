@@ -152,17 +152,15 @@ test_multiline_process_environment_does_not_spoof_presence() {
 
 # write_swap_perl <fakebin>: install a `perl` shim that once renames
 # FM_TEST_SWAP_PATH aside and leaves a symlink to FM_TEST_SWAP_TARGET in its
-# place - the same swap for a file or a directory. It fires only on the scan
-# invocation (`-MFcntl=:DEFAULT`), never on the earlier directory-resolution
-# perl, so the swap lands inside the resolve-to-open window the pinning closes
-# rather than before any resolution has happened.
+# place - the same swap for a file or a directory. The selected phase fires on
+# either the scan invocation (`-MFcntl=:DEFAULT`) or directory resolution.
 write_swap_perl() {
   local fakebin=$1
   cat > "$fakebin/perl" <<'SH'
 #!/usr/bin/env bash
 set -u
-case " $* " in
-  *" -MFcntl=:DEFAULT "*)
+case "${FM_TEST_SWAP_PHASE:-scan}: $*" in
+  scan:*" -MFcntl=:DEFAULT "*|resolve:*" -MCwd=realpath "*)
     if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
       mv -- "$FM_TEST_SWAP_PATH" "$FM_TEST_SWAP_PATH.moved"
       ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
@@ -275,6 +273,39 @@ test_parent_directory_swap_stops_safely() {
   [ "$(cat "$primary.moved/.env.local")" = 'PARALLEL_API_KEY=dummy-real-value' ] || \
     fail "the swapped-away primary local source was modified"
   pass "a parent-directory swap between resolution and read fails closed"
+}
+
+test_parent_directory_swap_during_resolution_stops_safely() {
+  local case_dir primary isolated outside swap_done fakebin out status
+  case_dir="$TMP_ROOT/parent-directory-resolution-swap"
+  primary="$case_dir/primary"
+  isolated="$case_dir/isolated"
+  outside="$case_dir/outside"
+  swap_done="$case_dir/swap.done"
+  fm_git_init_commit "$primary"
+  cp -R "$primary" "$isolated"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-real-value' > "$primary/.env.local"
+  mkdir -p "$outside"
+  printf '%s\n' 'PARALLEL_API_KEY=dummy-outside-value' > "$outside/.env.local"
+  fakebin=$(fm_fakebin "$case_dir/fake")
+  write_swap_perl "$fakebin"
+
+  out=$(FM_TEST_SWAP_PHASE=resolve FM_TEST_SWAP_PATH="$primary" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$swap_done" FM_REAL_PERL="$REAL_PERL" PATH="$fakebin:$PATH" \
+    FM_PRIMARY_PROJECT_DIR="$primary" FM_PROJECT_LOCAL_ENV_ISOLATED_DIR="$isolated" \
+    FM_PROJECT_LOCAL_ENV_FILE=.env.local \
+    fm_run_with_deadline 10 "$CHECK" check PARALLEL_API_KEY 2>&1)
+  status=$?
+  expect_code 2 "$status" "a primary directory swapped during resolution must stop safely"
+  assert_contains "$out" 'cannot resolve FM_PRIMARY_PROJECT_DIR' \
+    "the resolution-time swap refusal did not explain the pinning boundary"
+  assert_not_contains "$out" 'PARALLEL_API_KEY: present' \
+    "a resolution-time directory swap produced a false presence result"
+  assert_not_contains "$out" 'dummy-outside-value' \
+    "a resolution-time directory swap exposed the replacement's value"
+  [ "$(cat "$primary.moved/.env.local")" = 'PARALLEL_API_KEY=dummy-real-value' ] || \
+    fail "the resolution-time swapped-away local source was modified"
+  pass "a parent-directory swap during resolution fails closed"
 }
 
 test_unsafe_boundary_stops_safely() {
@@ -636,6 +667,7 @@ test_unsafe_boundary_stops_safely
 test_local_source_swap_stops_safely
 test_special_local_sources_are_rejected_without_hanging
 test_parent_directory_swap_stops_safely
+test_parent_directory_swap_during_resolution_stops_safely
 test_spawn_worker_resolves_primary_local_presence
 test_spawn_rejects_symlinked_legacy_brief
 test_spawn_rejects_hardlinked_legacy_brief

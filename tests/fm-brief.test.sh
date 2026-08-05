@@ -739,6 +739,38 @@ test_brief_publication_refuses_special_and_existing_paths() {
   pass "fm-brief.sh: publication refuses existing/symlink/special paths and never leaves staging"
 }
 
+test_brief_publication_refuses_swapped_directory() {
+  local home id outside fakebin real_perl out status
+  home="$TMP_ROOT/publication-directory-swap-home"
+  id='brief-pub-directory-swap'
+  outside="$home/outside"
+  fakebin="$home/fakebin"
+  real_perl=$(command -v perl)
+  mkdir -p "$home/data/$id" "$outside" "$fakebin"
+  cat > "$fakebin/perl" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ -n "${FM_TEST_SWAP_PATH:-}" ] && [ ! -e "$FM_TEST_SWAP_DONE" ]; then
+  mv -- "$FM_TEST_SWAP_PATH" "$FM_TEST_SWAP_PATH.moved"
+  ln -s -- "$FM_TEST_SWAP_TARGET" "$FM_TEST_SWAP_PATH"
+  : > "$FM_TEST_SWAP_DONE"
+fi
+exec "$FM_REAL_PERL" "$@"
+SH
+  chmod +x "$fakebin/perl"
+
+  out=$(FM_TEST_SWAP_PATH="$home/data/$id" FM_TEST_SWAP_TARGET="$outside" \
+    FM_TEST_SWAP_DONE="$home/swap.done" FM_REAL_PERL="$real_perl" PATH="$fakebin:$PATH" \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR 2>&1)
+  status=$?
+  expect_code 1 "$status" "a task directory swapped before publication must be refused"
+  assert_contains "$out" 'not a stable real directory' \
+    "the swapped task directory refusal did not explain the pinning boundary"
+  assert_absent "$outside/brief.md" "brief publication followed a swapped task directory"
+  assert_absent "$home/data/$id.moved/brief.md" "brief publication wrote after its task directory moved"
+  pass "fm-brief.sh: publication pins its task directory before staging"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -779,4 +811,5 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_brief_publication_refuses_special_and_existing_paths
+test_brief_publication_refuses_swapped_directory
 test_scout_and_secondmate_scaffold
