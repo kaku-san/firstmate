@@ -1302,12 +1302,15 @@ $dir_pids"
   TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
 }
 
-# Single refusal policy for the lsof-free cleanup path, where no verified
-# process inventory exists. The default is fail-closed: teardown refuses and
-# preserves the worktree/tasktmp. Under --force the refusal downgrades to a
-# loud warning and teardown proceeds, because Fix 2 runs unconditionally on
-# --force (see its call site) - a permanent refusal there would leave teardown
-# unrunnable on any host that lacks lsof.
+# Single refusal policy for every no-evidence cleanup state - lsof missing,
+# an lsof scan that fails, or a leaked-process identity that cannot be read -
+# where no verified process inventory exists. The default is fail-closed:
+# teardown refuses and preserves the worktree/tasktmp. Under --force the
+# refusal downgrades to a loud warning and teardown proceeds, because Fix 2
+# runs unconditionally on --force (see its call site) - a permanent refusal
+# there would leave teardown unrunnable on any host that lacks lsof. Positive
+# proof that leaked processes survive the reap stays a hard refusal even
+# under --force.
 refuse_backend_reap() {  # <reason>
   local reason=$1
   if [ "$FORCE" = "--force" ]; then
@@ -1392,13 +1395,15 @@ reap_task_backend_process_group() {  # <label>
 # - both unique per task and never shared - before either is removed. TERM
 # first, then KILL after a short grace period for anything still alive; a
 # process that exits on its own between the two passes is simply absent from
-# the recheck. An lsof scan error refuses before destructive teardown. A
-# missing lsof uses the backend process-group fallback, which itself refuses -
-# on any non-tmux backend, on an unresolvable or unidentifiable pane pid, on a
-# pane process group that is teardown's own, on a process-group identity change
-# with the old group still live, and on a group that survives the cleanup -
-# because no verified process inventory exists there; --force downgrades each
-# of those refusals to a loud warning and proceeds.
+# the recheck. An lsof scan error or an unverifiable leaked-process identity
+# refuses before destructive teardown. A missing lsof uses the backend
+# process-group fallback, which itself refuses - on any non-tmux backend, on
+# an unresolvable or unidentifiable pane pid, on a pane process group that is
+# teardown's own, on a process-group identity change with the old group still
+# live, and on a group that survives the cleanup - because no verified process
+# inventory exists there. --force downgrades each of those no-evidence
+# refusals to a loud warning and proceeds; positive proof that processes
+# survive the reap attempts still refuses hard even under --force.
 reap_task_worktree_processes() {  # <label> <dir>...
   local label=$1 pids pid identity current_pids i pass=1 max_passes=3
   local -a tracked_pids tracked_identities remaining_pids remaining_identities
@@ -1409,8 +1414,8 @@ reap_task_worktree_processes() {  # <label> <dir>...
   fi
   while [ "$pass" -le "$max_passes" ]; do
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-      return 1
+      refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+      return 0
     fi
     pids=$TASK_PIDS
     [ -n "$pids" ] || return 0
@@ -1420,12 +1425,12 @@ reap_task_worktree_processes() {  # <label> <dir>...
       [ -n "$pid" ] || continue
       if ! identity=$(task_process_identity "$pid"); then
         if ! task_pids_under_roots "$@"; then
-          echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-          return 1
+          refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+          return 0
         fi
         if task_pid_list_contains "$TASK_PIDS" "$pid"; then
-          echo "REFUSED: cannot verify leaked process $pid identity for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-          return 1
+          refuse_backend_reap "cannot verify leaked process $pid identity for $ID" || return 1
+          return 0
         fi
         continue
       fi
@@ -1439,8 +1444,8 @@ EOF
       continue
     fi
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-      return 1
+      refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+      return 0
     fi
     current_pids=$TASK_PIDS
     echo "teardown: reaping leaked $label process(es) for $ID: $(printf '%s' "$pids" | tr '\n' ' ')" >&2
@@ -1454,8 +1459,8 @@ EOF
     done
     sleep 1
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-      return 1
+      refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+      return 0
     fi
     current_pids=$TASK_PIDS
     remaining_pids=()
@@ -1472,8 +1477,8 @@ EOF
     if [ "${#remaining_pids[@]}" -gt 0 ]; then
       echo "teardown: force-killing leaked $label process(es) for $ID: ${remaining_pids[*]}" >&2
       if ! task_pids_under_roots "$@"; then
-        echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-        return 1
+        refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+        return 0
       fi
       current_pids=$TASK_PIDS
       for i in "${!remaining_pids[@]}"; do
@@ -1488,8 +1493,8 @@ EOF
     pass=$((pass + 1))
   done
   if ! task_pids_under_roots "$@"; then
-    echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed)" || return 1
+    return 0
   fi
   [ -z "$TASK_PIDS" ] && return 0
   echo "REFUSED: leaked $label processes for $ID remain after $max_passes reap attempts; preserving the worktree/tasktmp for manual inspection or retry." >&2

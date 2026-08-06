@@ -2295,6 +2295,28 @@ EOF
   pass "an erroring lsof scan refuses teardown and preserves the task"
 }
 
+test_lsof_error_force_warns_and_completes() {
+  local case_dir rc
+  case_dir=$(make_case lsof-error-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  cat > "$case_dir/fakebin/lsof" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/lsof"
+
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "lsof-error-force: forced teardown should complete"
+  assert_grep "warning: --force: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" \
+    "$case_dir/stderr" "lsof-error-force: teardown did not warn loudly about the failed scan"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "lsof-error-force: forced teardown left task metadata behind"
+  pass "--force downgrades the erroring-lsof refusal to a warning and completes teardown"
+}
+
 test_reused_pid_identity_is_not_force_killed() {
   local case_dir rc pid
   case_dir=$(make_case reused-pid-identity)
@@ -2616,6 +2638,7 @@ test_lsof_absent_reaps_tmux_process_group
 test_lsof_absent_non_tmux_refuses_before_removal
 test_lsof_absent_non_tmux_force_warns_and_completes
 test_lsof_error_refuses_before_removal
+test_lsof_error_force_warns_and_completes
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
 test_process_spawned_during_grace_is_reaped_on_later_pass
