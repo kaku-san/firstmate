@@ -1358,6 +1358,8 @@ test_home_seed_preserves_existing_parent_binding() {
     "$ROOT/bin/fm-home-seed.sh" mate "$child" --no-projects > /dev/null 2>"$err"; then
     fail "reseed accepted a malformed existing durable parent binding"
   fi
+  grep -F "error: secondmate home has an unreadable durable parent binding" "$err" >/dev/null \
+    || fail "malformed durable parent reseed refused without naming the unreadable binding"
   cmp -s "$child/.fm-secondmate-parent" <(printf 'schema=fm-secondmate-parent.v1\nroute=local\n') \
     || fail "malformed durable parent reseed rewrote the existing parent binding"
   [ "$(cat "$child/.fm-secondmate-home")" = mate ] \

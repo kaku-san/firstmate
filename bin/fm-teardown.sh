@@ -1301,39 +1301,66 @@ $dir_pids"
   TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
 }
 
+# Single refusal policy for the lsof-free cleanup path, where no verified
+# process inventory exists. The default is fail-closed: teardown refuses and
+# preserves the worktree/tasktmp. Under --force the refusal downgrades to a
+# loud warning and teardown proceeds, because Fix 2 runs unconditionally on
+# --force (see its call site) - a permanent refusal there would leave teardown
+# unrunnable on any host that lacks lsof.
+refuse_backend_reap() {  # <reason>
+  local reason=$1
+  if [ "$FORCE" = "--force" ]; then
+    echo "warning: --force: $reason; proceeding with teardown WITHOUT verified process cleanup for $ID - a leaked process may still be writing under the worktree/tasktmp." >&2
+    return 0
+  fi
+  echo "REFUSED: $reason; preserving the worktree/tasktmp for manual inspection or retry." >&2
+  return 1
+}
+
+# A just-signalled process group answers kill -0 until its last member is
+# reaped, so a killed group is only a survivor if it is still there after a
+# short bounded wait.
+backend_process_group_settled() {  # <pgid>
+  local pgid=$1 attempt=0
+  while kill -0 -- "-$pgid" 2>/dev/null; do
+    [ "$attempt" -lt 5 ] || return 1
+    sleep 0.2 2>/dev/null || sleep 1
+    attempt=$((attempt + 1))
+  done
+}
+
 reap_task_backend_process_group() {  # <label>
   local label=$1 leader leader_start pgid current_pgid own_pgid
   if [ "$BACKEND" != tmux ]; then
-    echo "REFUSED: lsof is unavailable; no verified process cleanup fallback exists for $BACKEND task $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "lsof is unavailable; no verified process cleanup fallback exists for $BACKEND task $ID" || return 1
+    return 0
   fi
   leader=$(tmux display-message -p -t "$T" '#{pane_pid}' 2>/dev/null) || leader=""
   case "$leader" in ''|*[!0-9]*)
-    echo "REFUSED: lsof is unavailable; cannot resolve the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "lsof is unavailable; cannot resolve the tmux pane process group for $ID" || return 1
+    return 0
     ;;
   esac
   leader_start=$(task_process_identity "$leader") || {
-    echo "REFUSED: lsof is unavailable; cannot identify the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "lsof is unavailable; cannot identify the tmux pane process group for $ID" || return 1
+    return 0
   }
   pgid=$(ps -o pgid= -p "$leader" 2>/dev/null) || pgid=""
   pgid=$(printf '%s' "$pgid" | tr -d '[:space:]')
   case "$pgid" in ''|*[!0-9]*|0|1)
-    echo "REFUSED: lsof is unavailable; cannot resolve the tmux pane process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "lsof is unavailable; cannot resolve the tmux pane process group for $ID" || return 1
+    return 0
     ;;
   esac
   own_pgid=$(ps -o pgid= -p "$$" 2>/dev/null) || own_pgid=""
   own_pgid=$(printf '%s' "$own_pgid" | tr -d '[:space:]')
   if [ "$pgid" = "$own_pgid" ]; then
-    echo "REFUSED: lsof is unavailable; refusing to signal teardown's own process group for $ID; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+    refuse_backend_reap "lsof is unavailable; refusing to signal teardown's own process group for $ID" || return 1
+    return 0
   fi
   if ! task_process_identity_matches "$leader" "$leader_start"; then
     if kill -0 -- "-$pgid" 2>/dev/null; then
-      echo "REFUSED: lsof is unavailable; the tmux process group for $ID changed before cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
-      return 1
+      refuse_backend_reap "lsof is unavailable; the tmux process group for $ID changed before cleanup" || return 1
     fi
     return 0
   fi
@@ -1341,8 +1368,7 @@ reap_task_backend_process_group() {  # <label>
   current_pgid=$(printf '%s' "$current_pgid" | tr -d '[:space:]')
   if [ "$current_pgid" != "$pgid" ]; then
     if kill -0 -- "-$pgid" 2>/dev/null; then
-      echo "REFUSED: lsof is unavailable; the tmux process group for $ID changed before cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
-      return 1
+      refuse_backend_reap "lsof is unavailable; the tmux process group for $ID changed before cleanup" || return 1
     fi
     return 0
   fi
@@ -1355,24 +1381,29 @@ reap_task_backend_process_group() {  # <label>
     echo "teardown: force-killing leaked $label process group for $ID: $pgid" >&2
     kill -KILL -- "-$pgid" 2>/dev/null || true
   fi
-  if kill -0 -- "-$pgid" 2>/dev/null; then
-    echo "REFUSED: leaked $label process group for $ID remains after the lsof-free cleanup; preserving the worktree/tasktmp for manual inspection or retry." >&2
-    return 1
+  if ! backend_process_group_settled "$pgid"; then
+    refuse_backend_reap "leaked $label process group for $ID remains after the lsof-free cleanup" || return 1
   fi
+  return 0
 }
 
 # Reap every process rooted (by cwd) under this task's own worktree or tasktmp
 # - both unique per task and never shared - before either is removed. TERM
 # first, then KILL after a short grace period for anything still alive; a
 # process that exits on its own between the two passes is simply absent from
-# the recheck. A missing lsof uses the backend process-group fallback; an lsof
-# scan error refuses before destructive teardown.
+# the recheck. An lsof scan error refuses before destructive teardown. A
+# missing lsof uses the backend process-group fallback, which itself refuses -
+# on any non-tmux backend, on an unresolvable or unidentifiable pane pid, on a
+# pane process group that is teardown's own, on a process-group identity change
+# with the old group still live, and on a group that survives the cleanup -
+# because no verified process inventory exists there; --force downgrades each
+# of those refusals to a loud warning and proceeds.
 reap_task_worktree_processes() {  # <label> <dir>...
   local label=$1 pids pid identity current_pids i pass=1 max_passes=3
   local -a tracked_pids tracked_identities remaining_pids remaining_identities
   shift
   if ! command -v lsof >/dev/null 2>&1; then
-    reap_task_backend_process_group "$label"
+    reap_task_backend_process_group "$label" || return 1
     return 0
   fi
   while [ "$pass" -le "$max_passes" ]; do
@@ -2214,7 +2245,7 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+  reap_task_worktree_processes worktree "$WT" "$TASK_TMP" || exit 1
 fi
 
 # A Herdr close may reposition shared workspace order, so the whole

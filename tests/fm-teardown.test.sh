@@ -554,8 +554,9 @@ run_teardown() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
-    mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id jq ln \
+    mkdir mktemp mv perl ps readlink realpath rm sed sh sha256sum shasum sleep sort stat tail timeout \
+    tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
@@ -2180,6 +2181,70 @@ EOF
   pass "missing lsof falls back to reaping the tmux pane process group"
 }
 
+# A non-tmux backend has no pane-process-group fallback, so a host without lsof
+# cannot prove the worktree is free of leaked processes. Args: case_dir
+configure_lsof_absent_herdr_case() {  # <case-dir>
+  local case_dir=$1
+  sed -i.bak 's/^window=.*/window=default:wG:pQ/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=herdr' \
+    'herdr_session=default' \
+    'herdr_workspace_id=wG' \
+    'herdr_tab_id=wG:tQ' \
+    'herdr_pane_id=wG:pQ' >> "$case_dir/state/task-x1.meta"
+  cat > "$case_dir/fakebin/herdr" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "session list") printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}' ;;
+  "status --json") printf '%s\n' '{"server":{"running":true}}' ;;
+  "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+}
+
+test_lsof_absent_non_tmux_refuses_before_removal() {
+  local case_dir rc path_without_lsof
+  case_dir=$(make_case lsof-absent-non-tmux-refusal)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  configure_lsof_absent_herdr_case "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "lsof-absent-non-tmux-refusal: teardown should refuse"
+  assert_grep "REFUSED: lsof is unavailable; no verified process cleanup fallback exists for herdr task task-x1" \
+    "$case_dir/stderr" "lsof-absent-non-tmux-refusal: teardown did not explain the fail-closed refusal"
+  assert_present "$case_dir/wt" "lsof-absent-non-tmux-refusal: teardown removed the worktree"
+  assert_present "$case_dir/state/task-x1.meta" "lsof-absent-non-tmux-refusal: teardown removed task metadata"
+  pass "a missing lsof on a non-tmux backend refuses teardown and preserves the task"
+}
+
+test_lsof_absent_non_tmux_force_warns_and_completes() {
+  local case_dir rc path_without_lsof
+  case_dir=$(make_case lsof-absent-non-tmux-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  configure_lsof_absent_herdr_case "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "lsof-absent-non-tmux-force: forced teardown should complete"
+  assert_grep "warning: --force: lsof is unavailable; no verified process cleanup fallback exists for herdr task task-x1" \
+    "$case_dir/stderr" "lsof-absent-non-tmux-force: teardown did not warn loudly about the skipped cleanup"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "lsof-absent-non-tmux-force: forced teardown left task metadata behind"
+  pass "--force downgrades the lsof-free non-tmux refusal to a warning and completes teardown"
+}
+
 test_lsof_error_refuses_before_removal() {
   local case_dir rc
   case_dir=$(make_case lsof-error-refusal)
@@ -2524,6 +2589,8 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
+test_lsof_absent_non_tmux_refuses_before_removal
+test_lsof_absent_non_tmux_force_warns_and_completes
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
