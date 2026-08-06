@@ -408,6 +408,10 @@ This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
 
+# Vision check
+Read the project's vision anchor in the home registry at \`$DATA/projects.md\` before drawing conclusions.
+Flag both directions of mismatch: anything the plan builds that the vision does not ask for, and anything the vision asks for that the plan does not build.
+
 # Rules
 1. Never push to any remote and never open a PR.
 2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.

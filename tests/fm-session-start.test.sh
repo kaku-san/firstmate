@@ -658,6 +658,44 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+# --- vision-anchor arch-map age cue -------------------------------------------
+
+test_vision_arch_map_age_cue() {
+  local rec root home fakebin out
+  rec=$(new_world vision-ages)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  cat > "$home/data/projects.md" <<'EOF'
+- demo [no-mistakes] - a demo project (added 2026-07-01)
+  Vision (2026-07-01): the captain's goal in his own words
+  Users: the captain
+  Priorities: one, two, three
+  Arch-map: 2020-01-01 data/demo-arch-map/report.md
+- plain [direct-PR] - no vision block here (added 2026-07-02)
+EOF
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Vision anchor architecture-map ages" "digest did not label the vision-anchor age section"
+  assert_contains "$out" "demo: newest architecture map is " "digest did not print the arch-map age for the anchored project"
+  assert_contains "$out" "day(s) old (dated 2020-01-01)" "digest did not print the recorded arch-map date"
+
+  # A registry without vision blocks degrades to the explicit note.
+  printf '%s\n' '- plain [direct-PR] - no vision block here (added 2026-07-02)' > "$home/data/projects.md"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "(no registry vision anchors)" "registry without vision blocks did not degrade to the explicit note"
+
+  # An absent registry degrades to the same explicit note, never a failure.
+  rm -f "$home/data/projects.md"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "(no registry vision anchors)" "absent registry did not degrade to the explicit note"
+
+  pass "session start prints vision-anchor arch-map ages and degrades explicitly"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -1941,6 +1979,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_vision_arch_map_age_cue
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock

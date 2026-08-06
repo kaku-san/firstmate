@@ -45,8 +45,9 @@
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
 #                       read-only, always runs.
 #   7. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
+#                       data/captain-shared.md, data/learnings.md, plus the
+#                       vision-anchor architecture-map age staleness cue:
+#                       read-only, always safe, always runs.
 #   8. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
@@ -306,6 +307,50 @@ print_backlog_pointer() {
 # ...)", and "blocked-by: ...". Bracket expressions rather than backslashes,
 # because awk's -v applies escape processing before the regex is ever compiled.
 MANUAL_KEEP_RE='[(]hold|blocked-by:'
+
+# print_vision_arch_map_ages <registry>: the vision-anchor staleness cue
+# (AGENTS.md section 3). For every registry entry's indented vision block
+# (format owned by bin/fm-project-mode.sh's header), print the age in days of
+# its recorded newest architecture-map date so stale product knowledge is
+# visible at every session start. Read-only and advisory: a missing registry,
+# missing blocks, or an unparsable date degrade to explicit notes, never a
+# failure, because this digest always exits 0.
+print_vision_arch_map_ages() {
+  local reg=$1 line name d epoch today age found=0
+  subsection "Vision anchor architecture-map ages"
+  if [ ! -f "$reg" ]; then
+    printf '(no registry vision anchors)\n'
+    return 0
+  fi
+  today=$(date +%s)
+  name=''
+  while IFS= read -r line; do
+    case "$line" in
+      '- '*)
+        name=$(printf '%s\n' "$line" | awk '{print $2}')
+        ;;
+      [[:blank:]]*Arch-map:*)
+        found=1
+        d=$(printf '%s\n' "$line" | sed -n 's/.*Arch-map:[[:space:]]*\([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/p')
+        if [ -z "$d" ]; then
+          printf '%s: vision anchor Arch-map line has no YYYY-MM-DD date\n' "${name:-unknown}"
+          continue
+        fi
+        epoch=$(date -u -j -f '%Y-%m-%d' "$d" +%s 2>/dev/null || date -u -d "$d" +%s 2>/dev/null || printf '')
+        case "$epoch" in
+          ''|*[!0-9]*)
+            printf '%s: vision anchor arch-map date "%s" is unparsable\n' "${name:-unknown}" "$d"
+            ;;
+          *)
+            age=$(( (today - epoch) / 86400 ))
+            printf '%s: newest architecture map is %s day(s) old (dated %s)\n' "${name:-unknown}" "$age" "$d"
+            ;;
+        esac
+        ;;
+    esac
+  done < "$reg"
+  [ "$found" -eq 1 ] || printf '(no registry vision anchors)\n'
+}
 
 print_backlog_manual_compact() {
   local path=$1 reason=$2
@@ -695,6 +740,7 @@ fi
 stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
+print_vision_arch_map_ages "$DATA/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/captain.md" "data/captain.md"
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
