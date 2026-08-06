@@ -141,9 +141,8 @@ esac
 mkdir -p "$NVM_ROOT/alias/lts"
 printf 'lts/*\n' > "$NVM_ROOT/alias/default"
 fm_remote_job_compose_operator_path "$ACCOUNT_HOME" >/dev/null
-case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
-  *":$NVM_V20:"*|*":$NVM_V24:"*) fail "the composed PATH fell back from an unresolved nvm LTS alias" ;;
-esac
+NVM_SELECTED=$(PATH="$FM_REMOTE_JOB_OPERATOR_PATH" node)
+[ "$NVM_SELECTED" = 24 ] || fail "the composed PATH did not fall back to the newest installed node for an unresolved nvm LTS alias"
 printf 'v20.18.0\n' > "$NVM_ROOT/alias/lts/*"
 fm_remote_job_compose_operator_path "$ACCOUNT_HOME" >/dev/null
 case ":$FM_REMOTE_JOB_OPERATOR_PATH:" in
