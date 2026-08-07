@@ -2502,6 +2502,49 @@ SH
   pass "persistent leaked processes refuse teardown after bounded retries"
 }
 
+test_persistent_leak_refusal_stays_hard_under_force() {
+  local case_dir rc wt_path fake_pid=99999997
+  case_dir=$(make_case persistent-reap-force-refusal)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  wt_path=$(cd "$case_dir/wt" && pwd -P)
+  cat > "$case_dir/fakebin/lsof" <<EOF
+#!/usr/bin/env bash
+printf 'p%s\nfcwd\nn%s\n' '$fake_pid' '$wt_path'
+EOF
+  cat > "$case_dir/fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = -p ] && [ "${2:-}" = "${FM_FAKE_PERSISTENT_PID:-}" ] \
+   && [ "${3:-}" = -o ] && [ "${4:-}" = lstart= ]; then
+  printf 'Tue Aug  4 10:00:00 2026\n'
+  exit 0
+fi
+exec "$REAL_PS_FOR_TEST" "$@"
+SH
+  cat > "$case_dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+printf 'return\n' >> "$case_dir/treehouse.log"
+EOF
+  chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/ps" "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" FM_FAKE_PERSISTENT_PID="$fake_pid" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" \
+    "persistent-reap-force-refusal: --force must not downgrade the positive-proof refusal"
+  assert_grep "remain after 3 reap attempts" "$case_dir/stderr" \
+    "persistent-reap-force-refusal: teardown did not report bounded non-convergence"
+  ! grep -q "warning: --force" "$case_dir/stderr" || \
+    fail "persistent-reap-force-refusal: the positive-proof refusal was downgraded to a --force warning"
+  assert_present "$case_dir/wt" "persistent-reap-force-refusal: teardown removed the worktree"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "persistent-reap-force-refusal: teardown removed task metadata"
+  assert_absent "$case_dir/treehouse.log" \
+    "persistent-reap-force-refusal: teardown returned the worktree despite the refusal"
+  pass "a positively detected persistent leak refuses teardown even under --force"
+}
+
 test_process_exit_during_identity_lookup_does_not_refuse() {
   local case_dir rc wt_path fake_pid=99999998
   case_dir=$(make_case identity-exit-convergence)
@@ -2643,5 +2686,6 @@ test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
 test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
+test_persistent_leak_refusal_stays_hard_under_force
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
