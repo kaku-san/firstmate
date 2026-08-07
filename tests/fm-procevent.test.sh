@@ -702,7 +702,9 @@ TRIG4="$TMP_ROOT/trigger-four"
 HZ="$TMP_ROOT/hz"; new_home "$HZ"
 pe_register "$HZ" lavish orphan-src -- "$BLOCKER" "$TRIG4" "orphan" >/dev/null
 pe "$HZ" reconcile >/dev/null
-sleep 0.5
+# The detached runner publishes its claim atomically but asynchronously, so a
+# fixed sleep races runner startup on a slow machine; wait for the claim itself.
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" || fail "orphan fixture runner did not start"
 orphan_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" 2>/dev/null)
 if [ -z "$orphan_pid" ] || ! kill -0 "$orphan_pid" 2>/dev/null; then
   fail "orphan fixture runner did not start"
@@ -817,8 +819,14 @@ sleep 0.5
 assert_absent "$ORPHAN_OVERLAP" "no replacement source starts while the crashed generation remains alive"
 case "$orphan_out" in
   *"started=1"*)
-    [ -e "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" ] \
+    # The replacement runner records its claim and its started line
+    # asynchronously after reconcile returns, so give both a bounded wait
+    # instead of sampling at a fixed instant.
+    wait_for "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" \
       || fail "a replacement runner started without recording its own claim"
+    for _ in $(seq 1 100); do
+      [ "$(wc -l < "$ORPHAN_LOG" | tr -d ' ')" = 2 ] && break; sleep 0.1
+    done
     [ "$(wc -l < "$ORPHAN_LOG" | tr -d ' ')" = 2 ] \
       || fail "reconcile did not start exactly one replacement source: $(cat "$ORPHAN_LOG")"
     ;;
