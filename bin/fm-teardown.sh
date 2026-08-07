@@ -54,8 +54,11 @@
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
-#   checks, and discards secondmate child work for kind=secondmate. Only use it
-#   when the captain has explicitly said to discard the work.
+#   checks, and discards secondmate child work for kind=secondmate. It also
+#   downgrades the pre-teardown process reap's no-evidence refusals to loud
+#   warnings, while positive proof of surviving leaked processes still refuses
+#   hard (refuse_backend_reap below owns that contract). Only use it when the
+#   captain has explicitly said to discard the work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
