@@ -324,7 +324,7 @@ print_vision_arch_map_ages() {
   fi
   today=$(date +%s)
   name=''
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       '- '*)
         name=$(printf '%s\n' "$line" | awk '{print $2}')

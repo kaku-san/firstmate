@@ -683,6 +683,11 @@ EOF
   assert_contains "$out" "demo: newest architecture map is " "digest did not print the arch-map age for the anchored project"
   assert_contains "$out" "day(s) old (dated 2020-01-01)" "digest did not print the recorded arch-map date"
 
+  # A final Arch-map line without a trailing newline still counts.
+  printf -- '- demo [no-mistakes] - a demo project (added 2026-07-01)\n  Arch-map: 2019-06-01 data/demo-arch-map/report.md' > "$home/data/projects.md"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "day(s) old (dated 2019-06-01)" "arch-map cue dropped a final registry line lacking a trailing newline"
+
   # A registry without vision blocks degrades to the explicit note.
   printf '%s\n' '- plain [direct-PR] - no vision block here (added 2026-07-02)' > "$home/data/projects.md"
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
