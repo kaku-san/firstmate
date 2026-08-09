@@ -286,7 +286,8 @@ Pi has no such mechanism.
 It never splits the captain's active tab and never uses shell `&`.
 Recovery reconciles only the recorded exact id.
 
-On stop, the daemon receives termination while `state/.afk` still exists so its final flush can run, the recorded terminal is closed, and the AFK flag is removed last.
+On stop, the launcher sends termination while `state/.afk` still exists so the daemon usually flushes first, then closes the recorded terminal and removes the AFK flag on success.
+If that bounded shutdown sequence does not complete, launch keeps `state/.afk` and the offered recoverable escalation state in place so manual follow-up can recover the transition.
 A fresh entry clears stale transient escalation caches, while durable queue and task records remain authoritative.
 
 ## Destructive lab safety

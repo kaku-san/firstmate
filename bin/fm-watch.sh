@@ -840,6 +840,7 @@ while :; do
       fi
       if [ -n "$out" ]; then
         reason="check: $c: $out"
+        triage_log "published check wake source=$c result=$out source_present=1 pr_poll=$is_pr_poll"
         fm_wake_append check "$c" "$reason" || exit 1
         if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then

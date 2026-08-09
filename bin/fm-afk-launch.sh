@@ -30,10 +30,12 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
-#   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
-#                              cleanup flushes WHILE state/.afk is still present,
+#   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon while
+#                              state/.afk is still present so cleanup can flush;
 #                              wait for it, close the recorded terminal by exact
-#                              id, then clear state/.afk last.
+#                              id, then clear state/.afk last on successful
+#                              shutdown. If the daemon misses the bounded wait,
+#                              preserve state/.afk and offered recovery state.
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
@@ -611,10 +613,12 @@ fm_afk_launch_stop() {
   fi
   if [ -n "$pid" ] && fm_pid_alive "$pid"; then
     current_identity=$(fm_pid_identity "$pid" 2>/dev/null) || {
+      fm_afk_launch_log "diagnostic: away-mode daemon exceeded the 10-second SIGTERM wait and its identity is unreadable; preserving lifecycle state"
       fm_afk_launch_log "could not confirm away-mode daemon exit; preserving lifecycle state"
       return 1
     }
     if [ "$current_identity" = "$pid_identity" ]; then
+      fm_afk_launch_log "diagnostic: away-mode daemon exceeded the 10-second SIGTERM wait; inspect .supervise-daemon.log for bounded cleanup timing"
       fm_afk_launch_log "away-mode daemon did not exit after SIGTERM; preserving lifecycle state"
       return 1
     fi

@@ -127,6 +127,126 @@ test_classify_check_and_unknown_escalate() {
   pass "check + unknown escalate; heartbeat self-handles"
 }
 
+test_afk_logical_result_path_growth_dedup() {
+  local dir state turn status count out
+  dir=$(make_supercase afk-result-path-growth)
+  state="$dir/state"
+  turn="$state/growth-r1.turn-ended"
+  status="$state/growth-r1.status"
+  afk_enter "$state"
+  printf 'done: merged result\n' > "$status"
+  touch -t 200001010000 "$status"
+  : > "$turn"
+  touch -t 200001010001 "$turn"
+  out=$(FM_STATE_OVERRIDE="$state" classify_signal "$turn" "$state")
+  case "$out" in escalate\|*) ;; *) fail "bare turn-ended result did not escalate: $out" ;; esac
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "bare turn-ended result did not create one buffered item"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn $status" "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn $status" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "path growth or exact repetition created duplicate results ($count)"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_send_text_submit() { printf 'empty'; }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=lab:captain escalate_flush "$state"
+  ) || fail "confirmed path-growth result did not flush"
+  [ "$(wc -l < "$state/.subsuper-result-seen-growth-r1" | tr -d ' ')" -eq 1 ] \
+    || fail "confirmed path-growth result did not commit one logical-result identity"
+  touch -t 200001010002 "$turn"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "later turn marker re-emitted an unchanged historical terminal status"
+  printf 'done: second actionable transition\n' > "$status"
+  touch -t 200001010003 "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn $status" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "new actionable status transition was suppressed or duplicated ($count)"
+  grep -F 'done: second actionable transition' "$state/.subsuper-escalations" >/dev/null \
+    || fail "new actionable transition was not retained"
+  (
+    fm_backend_target_exists() { return 0; }
+    pane_is_busy() { return 1; }
+    fm_backend_composer_state() { printf 'empty'; }
+    fm_backend_busy_state() { printf 'idle'; }
+    fm_backend_send_text_submit() { printf 'empty'; }
+    FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET=lab:captain escalate_flush "$state"
+  ) || fail "new actionable transition did not flush"
+  [ "$(wc -l < "$state/.subsuper-result-seen-growth-r1" | tr -d ' ')" -eq 2 ] \
+    || fail "new actionable transition did not commit a second logical-result identity"
+  pass "away logical result identity dedupes path growth and exact repeats while preserving a new transition"
+}
+
+test_afk_result_dedupes_heartbeat_orderings() {
+  local dir state turn status count
+  dir=$(make_supercase afk-result-turn-before-heartbeat)
+  state="$dir/state"
+  turn="$state/order-r1.turn-ended"
+  status="$state/order-r1.status"
+  afk_enter "$state"
+  printf 'done: turn first\n' > "$status"
+  : > "$turn"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "heartbeat duplicated a status buffered by a turn-only wake ($count)"
+
+  dir=$(make_supercase afk-result-heartbeat-before-turn)
+  state="$dir/state"
+  turn="$state/order-r2.turn-ended"
+  status="$state/order-r2.status"
+  afk_enter "$state"
+  printf 'done: heartbeat first\n' > "$status"
+  : > "$turn"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $turn" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "turn-only wake duplicated a status buffered by heartbeat ($count)"
+  pass "away result deduplication is stable across heartbeat and turn wake ordering"
+}
+
+test_afk_heartbeat_surfaces_reopened_status_event() {
+  local dir state status count
+  dir=$(make_supercase afk-result-reopened-status)
+  state="$dir/state"
+  status="$state/reopened-r1.status"
+  afk_enter "$state"
+  printf 'blocked [key=sample]: waiting\n' > "$status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  printf 'resolved [key=sample]: resumed\nblocked [key=sample]: waiting\n' >> "$status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=0 \
+    housekeeping "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 2 ] || fail "heartbeat suppressed a reopened status event with identical text ($count)"
+  pass "heartbeat surfaces reopened terminal events with identical status text"
+}
+
+test_afk_historical_check_is_bounded_and_deduped() {
+  local dir state reason count
+  dir=$(make_supercase afk-historical-check)
+  state="$dir/state"
+  afk_enter "$state"
+  reason="check: $state/removed.check.sh: merged"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state"
+  FM_STATE_OVERRIDE="$state" handle_wake "$reason" "$state"
+  count=$(wc -l < "$state/.subsuper-escalations" | tr -d ' ')
+  [ "$count" -eq 1 ] || fail "removed merged check was not deduped ($count)"
+  grep -F 'historical merged check (source already cleaned up)' "$state/.subsuper-escalations" >/dev/null \
+    || fail "removed merged check was not rendered as a bounded historical result"
+  pass "removed merged-check wakes retain one bounded historical reference"
+}
+
 test_stale_transient_self_records_marker() {
   local dir state out key
   dir=$(make_supercase stale-transient)
@@ -1940,6 +2060,10 @@ test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates
 test_classify_check_and_unknown_escalate
+test_afk_logical_result_path_growth_dedup
+test_afk_result_dedupes_heartbeat_orderings
+test_afk_heartbeat_surfaces_reopened_status_event
+test_afk_historical_check_is_bounded_and_deduped
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
 test_stale_terminal_escalates
