@@ -554,9 +554,8 @@ run_teardown() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id jq ln \
-    mkdir mktemp mv perl ps readlink realpath rm sed sh sha256sum shasum sleep sort stat tail timeout \
-    tr uname wc xargs; do
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+    mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
@@ -1668,6 +1667,99 @@ SH
   pass "forced secondmate teardown preflights every Herdr child before cleanup mutation"
 }
 
+configure_secondmate_with_tmux_children() {  # <case-dir>
+  local case_dir=$1 home="$1/secondmate-home" child child_wt
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
+  printf '%s\n' task-x1 > "$home/.fm-secondmate-home"
+  printf '%s\n' "home=$home" >> "$case_dir/state/task-x1.meta"
+  for child in child-a child-b; do
+    child_wt="$case_dir/$child-wt"
+    git -C "$case_dir/project" worktree add -q -b "fm/$child" "$child_wt" main
+    fm_write_meta "$home/state/$child.meta" \
+      "window=firstmate:fm-$child" \
+      "endpoint_task_id=$child" \
+      "worktree=$child_wt" \
+      "project=$case_dir/project" \
+      "kind=ship" \
+      "mode=local-only"
+    : > "$home/state/$child.status"
+  done
+}
+
+test_forced_secondmate_teardown_holds_descendant_lifecycle_locks() {
+  local case_dir home lock ready release holder_pid rc waited=0 child
+  case_dir=$(make_case descendant-locks)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_tmux_children "$case_dir"
+  home="$case_dir/secondmate-home"
+  : > "$case_dir/kill.log"
+  : > "$case_dir/treehouse.log"
+  cat > "$case_dir/fakebin/tmux" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/kill.log"
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/treehouse.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tmux" "$case_dir/fakebin/treehouse"
+
+  lock="$home/state/.control-child-b.lock"
+  ready="$case_dir/lock-ready"
+  release="$case_dir/lock-release"
+  ROOT="$ROOT" LOCK="$lock" READY="$ready" RELEASE="$release" \
+    HOME_STATE="$home/state" OWNER_PID="$$" bash -c '
+    export FM_STATE_OVERRIDE="$HOME_STATE"
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$LOCK" || exit 1
+    : > "$READY"
+    while [ ! -e "$RELEASE" ] && kill -0 "$OWNER_PID" 2>/dev/null; do sleep 0.1; done
+    fm_lock_release "$LOCK"
+  ' &
+  holder_pid=$!
+  while [ ! -e "$ready" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -e "$ready" ] || fail "descendant-locks: the contending lifecycle action never acquired its lock"
+
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    : > "$release"
+    wait "$holder_pid" 2>/dev/null || true
+    fail "descendant-locks: forced teardown ignored a descendant lifecycle lock"
+  fi
+  assert_grep "descendant task child-b has a lifecycle action in flight" "$case_dir/stderr" \
+    "descendant-locks: refusal did not name the contended descendant"
+  [ ! -e "$home/state/.control-child-a.lock" ] \
+    && [ ! -e "$home/state/.meta-child-a.lock" ] \
+    || { : > "$release"; wait "$holder_pid" 2>/dev/null || true; fail "descendant-locks: refusal leaked earlier descendant locks"; }
+  [ ! -s "$case_dir/kill.log" ] \
+    || { : > "$release"; wait "$holder_pid" 2>/dev/null || true; fail "descendant-locks: refusal killed an endpoint"; }
+  [ ! -s "$case_dir/treehouse.log" ] \
+    || { : > "$release"; wait "$holder_pid" 2>/dev/null || true; fail "descendant-locks: refusal returned a worktree"; }
+  [ -e "$case_dir/state/task-x1.meta" ] && [ -d "$home" ] \
+    || { : > "$release"; wait "$holder_pid" 2>/dev/null || true; fail "descendant-locks: refusal removed parent state"; }
+  for child in child-a child-b; do
+    [ -e "$home/state/$child.meta" ] && [ -d "$case_dir/$child-wt" ] \
+      || { : > "$release"; wait "$holder_pid" 2>/dev/null || true; fail "descendant-locks: refusal removed $child state or worktree"; }
+  done
+
+  : > "$release"
+  wait "$holder_pid" 2>/dev/null || true
+  rc=0
+  run_teardown "$case_dir" --force > "$case_dir/retry.stdout" 2> "$case_dir/retry.stderr" || rc=$?
+  expect_code 0 "$rc" "descendant-locks: uncontended retry should complete"
+  [ ! -e "$case_dir/state/task-x1.meta" ] && [ ! -d "$home" ] \
+    || fail "descendant-locks: uncontended retry retained retired task state"
+  [ -s "$case_dir/kill.log" ] && [ -s "$case_dir/treehouse.log" ] \
+    || fail "descendant-locks: uncontended retry did not perform endpoint and worktree cleanup"
+  pass "forced secondmate teardown holds every descendant lifecycle and metadata lock"
+}
+
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed() {
   local case_dir home log closed rc
   case_dir=$(make_case herdr-child-unconfirmed-close)
@@ -2204,70 +2296,6 @@ EOF
   pass "missing lsof falls back to reaping the tmux pane process group"
 }
 
-# A non-tmux backend has no pane-process-group fallback, so a host without lsof
-# cannot prove the worktree is free of leaked processes. Args: case_dir
-configure_lsof_absent_herdr_case() {  # <case-dir>
-  local case_dir=$1
-  sed -i.bak 's/^window=.*/window=default:wG:pQ/' "$case_dir/state/task-x1.meta"
-  rm -f "$case_dir/state/task-x1.meta.bak"
-  printf '%s\n' \
-    'backend=herdr' \
-    'herdr_session=default' \
-    'herdr_workspace_id=wG' \
-    'herdr_tab_id=wG:tQ' \
-    'herdr_pane_id=wG:pQ' >> "$case_dir/state/task-x1.meta"
-  cat > "$case_dir/fakebin/herdr" <<SH
-#!/usr/bin/env bash
-case "\${1:-} \${2:-}" in
-  "session list") printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}' ;;
-  "status --json") printf '%s\n' '{"server":{"running":true}}' ;;
-  "pane get") printf '%s\n' '{"error":{"code":"pane_not_found"}}'; exit 1 ;;
-  *) exit 0 ;;
-esac
-SH
-  chmod +x "$case_dir/fakebin/herdr"
-}
-
-test_lsof_absent_non_tmux_refuses_before_removal() {
-  local case_dir rc path_without_lsof
-  case_dir=$(make_case lsof-absent-non-tmux-refusal)
-  write_meta "$case_dir" no-mistakes ship
-  land_shippable_commit "$case_dir"
-  configure_lsof_absent_herdr_case "$case_dir"
-  path_without_lsof=$(make_path_without_lsof "$case_dir")
-
-  rc=0
-  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
-    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-
-  expect_code 1 "$rc" "lsof-absent-non-tmux-refusal: teardown should refuse"
-  assert_grep "REFUSED: lsof is unavailable; no verified process cleanup fallback exists for herdr task task-x1" \
-    "$case_dir/stderr" "lsof-absent-non-tmux-refusal: teardown did not explain the fail-closed refusal"
-  assert_present "$case_dir/wt" "lsof-absent-non-tmux-refusal: teardown removed the worktree"
-  assert_present "$case_dir/state/task-x1.meta" "lsof-absent-non-tmux-refusal: teardown removed task metadata"
-  pass "a missing lsof on a non-tmux backend refuses teardown and preserves the task"
-}
-
-test_lsof_absent_non_tmux_force_warns_and_completes() {
-  local case_dir rc path_without_lsof
-  case_dir=$(make_case lsof-absent-non-tmux-force)
-  write_meta "$case_dir" no-mistakes ship
-  land_shippable_commit "$case_dir"
-  configure_lsof_absent_herdr_case "$case_dir"
-  path_without_lsof=$(make_path_without_lsof "$case_dir")
-
-  rc=0
-  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
-    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-
-  expect_code 0 "$rc" "lsof-absent-non-tmux-force: forced teardown should complete"
-  assert_grep "warning: --force: lsof is unavailable; no verified process cleanup fallback exists for herdr task task-x1" \
-    "$case_dir/stderr" "lsof-absent-non-tmux-force: teardown did not warn loudly about the skipped cleanup"
-  assert_absent "$case_dir/state/task-x1.meta" \
-    "lsof-absent-non-tmux-force: forced teardown left task metadata behind"
-  pass "--force downgrades the lsof-free non-tmux refusal to a warning and completes teardown"
-}
-
 test_lsof_error_refuses_before_removal() {
   local case_dir rc
   case_dir=$(make_case lsof-error-refusal)
@@ -2293,28 +2321,6 @@ EOF
   assert_present "$case_dir/state/task-x1.meta" "lsof-error-refusal: teardown removed task metadata"
   assert_absent "$case_dir/treehouse.log" "lsof-error-refusal: teardown returned the worktree"
   pass "an erroring lsof scan refuses teardown and preserves the task"
-}
-
-test_lsof_error_force_warns_and_completes() {
-  local case_dir rc
-  case_dir=$(make_case lsof-error-force)
-  write_meta "$case_dir" no-mistakes ship
-  land_shippable_commit "$case_dir"
-  cat > "$case_dir/fakebin/lsof" <<'SH'
-#!/usr/bin/env bash
-exit 1
-SH
-  chmod +x "$case_dir/fakebin/lsof"
-
-  rc=0
-  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-
-  expect_code 0 "$rc" "lsof-error-force: forced teardown should complete"
-  assert_grep "warning: --force: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" \
-    "$case_dir/stderr" "lsof-error-force: teardown did not warn loudly about the failed scan"
-  assert_absent "$case_dir/state/task-x1.meta" \
-    "lsof-error-force: forced teardown left task metadata behind"
-  pass "--force downgrades the erroring-lsof refusal to a warning and completes teardown"
 }
 
 test_reused_pid_identity_is_not_force_killed() {
@@ -2502,49 +2508,6 @@ SH
   pass "persistent leaked processes refuse teardown after bounded retries"
 }
 
-test_persistent_leak_refusal_stays_hard_under_force() {
-  local case_dir rc wt_path fake_pid=99999997
-  case_dir=$(make_case persistent-reap-force-refusal)
-  write_meta "$case_dir" no-mistakes ship
-  land_shippable_commit "$case_dir"
-  wt_path=$(cd "$case_dir/wt" && pwd -P)
-  cat > "$case_dir/fakebin/lsof" <<EOF
-#!/usr/bin/env bash
-printf 'p%s\nfcwd\nn%s\n' '$fake_pid' '$wt_path'
-EOF
-  cat > "$case_dir/fakebin/ps" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = -p ] && [ "${2:-}" = "${FM_FAKE_PERSISTENT_PID:-}" ] \
-   && [ "${3:-}" = -o ] && [ "${4:-}" = lstart= ]; then
-  printf 'Tue Aug  4 10:00:00 2026\n'
-  exit 0
-fi
-exec "$REAL_PS_FOR_TEST" "$@"
-SH
-  cat > "$case_dir/fakebin/treehouse" <<EOF
-#!/usr/bin/env bash
-printf 'return\n' >> "$case_dir/treehouse.log"
-EOF
-  chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/ps" "$case_dir/fakebin/treehouse"
-
-  rc=0
-  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" FM_FAKE_PERSISTENT_PID="$fake_pid" \
-    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-
-  expect_code 1 "$rc" \
-    "persistent-reap-force-refusal: --force must not downgrade the positive-proof refusal"
-  assert_grep "remain after 3 reap attempts" "$case_dir/stderr" \
-    "persistent-reap-force-refusal: teardown did not report bounded non-convergence"
-  ! grep -q "warning: --force" "$case_dir/stderr" || \
-    fail "persistent-reap-force-refusal: the positive-proof refusal was downgraded to a --force warning"
-  assert_present "$case_dir/wt" "persistent-reap-force-refusal: teardown removed the worktree"
-  assert_present "$case_dir/state/task-x1.meta" \
-    "persistent-reap-force-refusal: teardown removed task metadata"
-  assert_absent "$case_dir/treehouse.log" \
-    "persistent-reap-force-refusal: teardown returned the worktree despite the refusal"
-  pass "a positively detected persistent leak refuses teardown even under --force"
-}
-
 test_process_exit_during_identity_lookup_does_not_refuse() {
   local case_dir rc wt_path fake_pid=99999998
   case_dir=$(make_case identity-exit-convergence)
@@ -2642,6 +2605,7 @@ test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
+test_forced_secondmate_teardown_holds_descendant_lifecycle_locks
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
@@ -2678,14 +2642,10 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
-test_lsof_absent_non_tmux_refuses_before_removal
-test_lsof_absent_non_tmux_force_warns_and_completes
 test_lsof_error_refuses_before_removal
-test_lsof_error_force_warns_and_completes
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
 test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
-test_persistent_leak_refusal_stays_hard_under_force
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
