@@ -562,6 +562,29 @@ make_path_without_lsof() {  # <case-dir>
   printf '%s\n' "$path_dir"
 }
 
+test_case_variant_primary_record_refuses() {
+  local case_dir worktree_case out rc
+  case_dir=$(make_case case-variant-primary)
+  worktree_case="$(dirname "$case_dir/project")/Project"
+  if [ ! -d "$worktree_case" ]; then
+    printf '%s\n' "ok - skip: case-insensitive filesystem is required for the case-variant teardown regression"
+    return
+  fi
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=firstmate:fm-task-x1" \
+    "endpoint_task_id=task-x1" \
+    "worktree=$worktree_case" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  out=$(run_teardown "$case_dir" 2>&1); rc=$?
+  expect_code 1 "$rc" "a case-variant primary worktree record must refuse cleanup"
+  assert_contains "$out" "records the primary project clone as its worktree" \
+    "teardown did not refuse the case-variant primary worktree record"
+  [ -d "$case_dir/project/.git" ] || fail "teardown modified the primary project clone"
+  pass "teardown refuses a case-variant record that names the primary project clone"
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -2591,6 +2614,7 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+test_case_variant_primary_record_refuses
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

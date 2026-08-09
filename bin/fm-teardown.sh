@@ -166,6 +166,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-path-identity-lib.sh
+. "$SCRIPT_DIR/fm-path-identity-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -452,6 +454,11 @@ ORCA_PATH_MATCH_VERIFIED=0
 
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
+if [ "$KIND" != secondmate ] && [ -d "$WT" ] && [ -d "$PROJ" ] \
+  && fm_path_identity_equal "$WT" "$PROJ"; then
+  echo "REFUSED: task $ID records the primary project clone as its worktree; preserving every task record." >&2
+  exit 1
+fi
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
@@ -949,7 +956,7 @@ worktree_registered_for_project() {
     case "$line" in
       worktree\ *)
         listed_abs=$(removal_target_abs_path "${line#worktree }" 2>/dev/null || true)
-        [ "$listed_abs" = "$abs_target" ] && return 0
+        fm_path_identity_equal "$listed_abs" "$abs_target" && return 0
         ;;
     esac
   done <<EOF
@@ -1526,7 +1533,7 @@ require_orca_worktree_path_match() {
     echo "REFUSED: Orca worktree id $worktree_id resolved to uninspectable path ${resolved:-<missing>}; preserving metadata." >&2
     return 1
   }
-  if [ "$resolved_abs" != "$inspected_abs" ]; then
+  if ! fm_path_identity_equal "$resolved_abs" "$inspected_abs"; then
     echo "REFUSED: Orca worktree id $worktree_id resolves to $resolved_abs, not inspected worktree $inspected_abs." >&2
     echo "Cannot verify dirty or unlanded work for the worktree Orca would remove; preserving metadata." >&2
     return 1

@@ -94,8 +94,10 @@ run_settle_spawn() {
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
-    FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
-    FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
+    FM_FAKE_PANE_PATH="${FM_SETTLE_PANE_PATH:-$WT_DIR}" \
+    FM_FAKE_PANE_STALE="${FM_SETTLE_PANE_STALE:-$STALE_DIR}" \
+    FM_FAKE_PANE_STALE_READS="${FM_SETTLE_PANE_STALE_READS:-$STALE_READS}" \
+    FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
 }
@@ -141,7 +143,36 @@ test_already_settled_pane_costs_one_confirm_sleep() {
   pass "an already-settled pane confirms via the existing inter-poll sleep, not an extra full cycle"
 }
 
+# macOS preserves caller-supplied path case on its case-insensitive default
+# filesystem, so a path that differs only in case can name the primary clone.
+# That must remain a project read, never become a candidate worktree.
+test_case_variant_project_path_is_not_accepted() {
+  local rec id out status case_variant
+  id=settle-case-variant-z3
+  rec=$(make_settle_case settle-case-variant "$id" 0)
+  read_settle_record "$rec"
+  case_variant="$(dirname "$PROJ_DIR")/Project"
+  if [ ! -d "$case_variant" ]; then
+    printf '%s\n' "ok - skip: case-insensitive filesystem is required for the case-variant spawn regression"
+    return
+  fi
+  cat > "$FAKEBIN_DIR/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$FAKEBIN_DIR/sleep"
+  out=$(FM_SETTLE_PANE_PATH="$case_variant" FM_SETTLE_PANE_STALE="$case_variant" \
+    FM_SETTLE_PANE_STALE_READS=0 run_settle_spawn "$id")
+  status=$?
+  expect_code 1 "$status" "a case-variant primary path must not be accepted as a worktree"
+  assert_contains "$out" "did not enter a worktree" \
+    "spawn accepted a case-variant primary project path"
+  [ ! -f "$HOME_DIR/state/$id.meta" ] || fail "spawn recorded the primary clone as a worktree"
+  pass "a case-variant primary path is not accepted as a worktree"
+}
+
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_sleep
+test_case_variant_project_path_is_not_accepted
 
 echo "# all fm-spawn-worktree-settle tests passed"
