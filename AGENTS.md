@@ -81,7 +81,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
   learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
-  projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
+  projects.md        thin fleet navigation registry recording each project's standing delivery posture and dated vision anchor (section 6); firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh
   secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
@@ -153,6 +153,7 @@ A lock-refused session must not spawn, steer, merge, drain the wake queue, repai
 4. **Fleet-state digest** - the compact backlog listing owned by `bin/fm-session-start.sh`; every `state/<id>.meta`; a bounded tail of each task's `state/<id>.status` (labeled as wake-EVENT history, not current state, with the full log path printed for a deeper read); the `state/.afk` flag; and one cheap alive/dead read of each task's recorded backend endpoint.
    That liveness line is a fast presence check only, not a full state read - when you need a crew's actual current state (a run-step, not just "is the pane there"), read it with `bin/fm-crew-state.sh <id>` as before; the digest deliberately skips that deeper, slower read for every task so it stays fast and bounded.
 5. **Context digest** - last of the bulk sections, the full contents of `data/projects.md`, `data/secondmates.md`, `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, each clearly delimited.
+   Each project vision anchor's newest architecture-map age prints with the digest as a staleness cue.
    A file that does not exist prints an explicit `ABSENT` marker, never confused with an empty-but-present file: absence is meaningful (`captain.md` absent means use the firstmate repo's built-in defaults, `projects.md` absent means rebuild it from the clones under `projects/`, etc.).
 6. **Supervision operating instructions and next step** - after the wake queue and before both digests, the digest emits exactly one operating block for the detected primary harness, followed by the read-once contract that governs them.
    The closing reminder points back to that emitted block and preserves only the lock, afk, Relay, and read-once reminders.
@@ -213,6 +214,8 @@ Cloning or registering a project is add intake and uses the same trigger.
 That skill owns registry syntax, delivery-mode selection, outward-facing consent, clone and initialization procedure, safe rollback, and removal preflight.
 Project creation never authorizes an unmentioned remote, and project removal never bypasses that preflight or unlanded-work checks; hard rule 1's concrete captain-approved project operation exception remains available when its exact conditions are met.
 
+Every registered project carries a dated vision anchor in its registry entry - the captain's goal in his own words, the users, the top priorities, and the newest architecture-map date - which `project-management` captures at add intake and refreshes inspect-then-update whenever the captain makes a product statement.
+
 Load `secondmate-provisioning` before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 Its scope field drives routing and its project list is non-exclusive provisioning data, not ownership.
 Keep `local-only` work in the main home.
@@ -263,6 +266,9 @@ Never both present a likely-enough solution and launch a parallel design exercis
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
+Before dispatching expensive correction or enforcement work whose acceptance criteria originate from an internal reviewer, steward, constitution, or spec rather than a current captain statement, confirm the criterion with the captain in one line when his last direct statement of it is older than the current work cycle.
+Never make a product-impacting decision in silo: consult the project repo's own product sources (its `AGENTS.md`, `ROADMAP.md`, `ONBOARDING.md`, and constitution) and the captain before committing to one.
+
 Resolve every ship task's concrete delivery mode and yolo posture at intake, and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.
 A current explicit captain instruction wins; otherwise the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
 On a `no-mistakes-prod-only` project, classify the task's surface: internal-only tooling, automation, contributor or operator process, and release or submission work ships `direct-PR`, while product-facing, mixed, and uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
@@ -275,6 +281,9 @@ Identification may be silent and may find no material path, and identifying a pa
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately with no concurrency cap when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only after naming a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing, preference among bounded paths that all implement the same authorized outcome, or the existence of a longer integrated path is not itself a dependency, and genuine blockers remain durable.
 Write the task-specific brief under section 11 before spawning.
+
+Milestone oversight reviews are scoped to question contracts, not only to enforce them: their first input is the project's vision anchor, and their scope includes firstmate's own plans and briefs alongside project changes.
+Route them through a configured strong-reasoning profile under section 4's dispatch-profile rules rather than duplicating that routing here.
 
 ### Dispatch and supervision handoff
 
@@ -332,6 +341,9 @@ Send the same worker one exact decision naming the decision key, step, action, a
 Require the matching `resolved` event, forbid `--yes`, and require the worker to process every synchronous return until completion or a genuinely new escalation.
 Resume fleet supervision immediately after the decision lands.
 
+Maintain a same-theme round counter in the task's backlog note across review-fix rounds on one guard or contract.
+At the third same-theme finding, or the first time a fix provably breaks intended product behavior measured against the project's vision anchor, stop deciding and escalate the contract itself to the captain in product terms with the cumulative cost; standing `yolo` never covers the next round.
+
 Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed or cancelled is failed.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
@@ -383,6 +395,7 @@ Handle actionable wakes as follows:
 2. For `stale:`, inspect the recorded endpoint and load `stuck-crewmate-recovery` for a stopped, looping, confused, or unresponsive worker; a deep-inspection reason also requires current-state and validation-log inspection.
 3. For `check:`, act on the named poll result, including merges, Relay events, and process-to-event source results.
 4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, update the backlog, and never report an unchanged fleet as progress.
+   End the review with one line comparing the top of the backlog against each active project's vision anchor, and escalate a mismatch to the captain rather than noting it silently.
 
 When any wake reports a merged PR for a project cloned in this home, refresh that clone through the guarded fleet-sync path.
 When Relay-linked work reaches a milestone or terminal state, load `fmx-respond`; before terminal teardown, use its promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up so the link clears even if earlier follow-ups were spent.
@@ -456,9 +469,12 @@ Do not surface automatic fixes, retries, routine progress, or internal supervisi
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
 Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface.
+Keep one decision board to at most about five decisions, and never place a product-shaping decision on the same board as engineering micro-decisions.
+State every product-shaping option's user-visible consequence so the captain decides consequences, not labels.
 Open a local HTML artifact through `bin/fm-procevent-lavish.sh open` so protected authored paths are staged before Lavish reads them.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
+When correction rounds on one task exceed a day or three same-theme rounds, the next captain-facing update leads with the cumulative cost and what it is buying.
 
 ## 10. Backlog contract
 

@@ -22,7 +22,11 @@ It does not replace `secondmate-provisioning`, which owns project clones inside 
 Projects live flat under `projects/`, and `data/projects.md` is the private fleet registry.
 Use the registry format and parser contract owned by the header of `bin/fm-project-mode.sh`.
 Keep each registry description useful for identifying the project, but keep delivery posture, captain-private state, and detailed project knowledge in their existing designated homes.
-Do not turn the registry into project documentation.
+Beyond the dated vision anchor below, do not turn the registry into project documentation.
+
+Every registry entry carries a dated vision anchor in the block format owned by `bin/fm-project-mode.sh`'s header: the captain's goal in his own words with the date, the users, the top priorities, and the newest architecture-map pointer with its date.
+Capture it at add intake by asking the captain one question - in one sentence, what is this project for? - and refresh it inspect-then-update whenever the captain makes a product statement about the project.
+The session-start digest reloads the anchor with the registry at every session, so these few dated lines are the fleet's always-loaded picture of what the project is for.
 
 Before adding, cloning, creating, or registering any project in the main home, inspect the authoritative `data/secondmates.md` routing table and judge every existing natural-language `scope:` against the proposed project or domain.
 Apply `AGENTS.md` section 7's authoritative secondmate routing rules; if an existing scope owns that domain, route the new-project operation or work there instead of creating or registering a duplicate main-home clone.

@@ -16,6 +16,17 @@
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
+# A registry entry may carry an indented vision block on the lines immediately
+# below its line (AGENTS.md section 6 states the anchor contract; the
+# project-management skill owns capturing and refreshing it):
+#     Vision (<goal-date>): <the captain's goal, in his own words>
+#     Users: <who the project serves>
+#     Priorities: <top priorities>
+#     Arch-map: <YYYY-MM-DD> <pointer to the newest architecture map>
+# The posture parser below reads only the "- <name>" line and ignores the
+# block; bin/fm-session-start.sh reads each Arch-map date and prints its age
+# as the session-start staleness cue.
+#
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
 #   direct-PR              push + PR via gh-axi, no pipeline

@@ -25,8 +25,10 @@ The concise standing authority boundary remains always loaded in `AGENTS.md` sec
 4. Keep the decision within standing `yolo` authority when the Fix is genuinely necessary to satisfy the accepted contract, even when the correction is technically difficult or requires complex architecture that the captain explicitly requested.
 5. Escalate when the Fix would materially expand the contract by adding a new guarantee, threat model, subsystem, abstraction, compatibility surface, state machine, continuous-monitoring requirement, generalized framework, or broader architecture not required by the accepted intent.
 6. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
-7. Examine the causal theme across prior findings and fix rounds.
+7. Examine the causal theme across prior findings and fix rounds, keeping the same-theme round counter in the task's backlog note current.
    Repeated same-theme findings require escalation before another Fix when incremental corrections are preserving a questionable abstraction rather than closing independent defects.
+   At the third same-theme finding on one guard or contract, or at the first Fix that would provably break intended product behavior measured against the project's vision anchor, the trip-wire is mechanical rather than a judgment call: escalate the contract itself, never just the finding, in product terms with the cumulative rounds, days, and cost.
+   Standing `yolo` never covers the round after the trip-wire fires.
 8. Apply the existing stronger captain boundaries first.
    Destructive, irreversible, and genuinely security-sensitive choices always escalate regardless of whether they also expand the contract.
 
@@ -49,6 +51,6 @@ Do not relay reviewer labels or gate output as if they settled the decision.
 
 - Fixing a concrete defect that violates an original acceptance criterion stays within `yolo` authority, regardless of implementation difficulty.
 - Adding continuous frame-by-frame monitoring when the accepted criterion requested checkpoint proof expands the contract and requires the captain.
-- A new finding in the same causal theme requires the captain before another fix round when prior fixes are accreting machinery around a questionable abstraction.
+- A new finding in the same causal theme requires the captain before another fix round when prior fixes are accreting machinery around a questionable abstraction, and always at the third same-theme round or the first fix that breaks intended product behavior.
 - A genuinely security-sensitive action requires the captain under the stronger existing boundary even if it is otherwise within scope.
 - Complex architecture explicitly requested by the captain stays within scope and does not escalate merely because it is complex.
