@@ -265,6 +265,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
+# shellcheck source=bin/fm-path-identity-lib.sh
+. "$SCRIPT_DIR/fm-path-identity-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
@@ -1828,8 +1830,8 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
 # below never notices the pane left the project) or false-positive (the
 # isolation guard refuses a spawn that never actually tangled). Canonicalize
-# once here so every downstream comparison uses the same physical form
-# (docs/herdr-backend.md "Known gaps").
+# once here to preserve the documented symlink behavior, then use filesystem
+# identity (bin/fm-path-identity-lib.sh) for every isolation decision.
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
 
 real_path_or_raw() {  # <path>
@@ -1850,18 +1852,19 @@ real_path_or_raw() {  # <path>
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real wt_top wt_top_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
   fi
-  proj_real=$PROJ_ABS_REAL
   wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null || true)
   wt_top_real=
   if ! wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P); then
     wt_top_real=
   fi
-  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
+  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] \
+    || ! fm_path_identity_equal "$WT" "$wt_top" \
+    || fm_path_identity_equal "$WT" "$PROJ_ABS_REAL"; then
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
@@ -2290,14 +2293,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
   # than wherever the pane happened to drift.
-  relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
     relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
+    [ -z "$relaunch_seen" ] || ! fm_path_identity_equal "$relaunch_seen" "$WT" || break
     sleep 0.5
   done
-  if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
+  if [ -z "$relaunch_seen" ] || ! fm_path_identity_equal "$relaunch_seen" "$WT"; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1
   fi
@@ -2310,11 +2312,11 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
   # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
+  # Compare filesystem identity against PROJ_ABS_REAL, not path strings: a
+  # symlinked project prefix or case-variant path would otherwise make the pane's
+  # OS-level cwd read differ before the pane has actually moved.
   #
-  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
+  # A single read whose filesystem identity differs from PROJ_ABS_REAL is not proof the pane
   # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
   # transiently reports an unrelated stale path (seen live as another real git
   # checkout entirely) before the shell catches up with treehouse get's cd. That
@@ -2328,17 +2330,13 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   candidate=""
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ]; then
-      p_real=$(real_path_or_raw "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
-        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-          WT="$p"
-          break
-        fi
-        candidate="$p_real"
-      else
-        candidate=""
+    if [ -n "$p" ] && ! fm_path_identity_equal "$p" "$PROJ_ABS_REAL"; then
+      p_identity=$(fm_path_identity_token "$p" 2>/dev/null || real_path_or_raw "$p")
+      if [ -n "$p_identity" ] && [ "$p_identity" = "$candidate" ]; then
+        WT="$p"
+        break
       fi
+      candidate=$p_identity
     else
       candidate=""
     fi

@@ -1299,6 +1299,22 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+test_spawn_relaunch_accepts_a_case_variant_worktree_path() {
+  local dir worktree_case out rc
+  dir=$(new_case casecwd rl19)
+  add_ship_task "$dir" rl19 claude
+  worktree_case="$(dirname "$dir/wt")/Wt"
+  if [ ! -d "$worktree_case" ]; then
+    printf '%s\n' "ok - skip: case-insensitive filesystem is required for the case-variant relaunch regression"
+    return
+  fi
+  printf 'zsh' > "$dir/fake/command"
+  printf '%s' "$worktree_case" > "$dir/fake/cwd"
+  out=$(run_spawn "$dir" rl19 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "a pane in the recorded worktree under a case-variant spelling should relaunch"
+  pass "fm-spawn --relaunch: accepts a case-variant spelling of the recorded worktree"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1344,3 +1360,4 @@ test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_spawn_relaunch_accepts_a_case_variant_worktree_path
