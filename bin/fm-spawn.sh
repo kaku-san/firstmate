@@ -1831,7 +1831,7 @@ BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"
 # below never notices the pane left the project) or false-positive (the
 # isolation guard refuses a spawn that never actually tangled). Canonicalize
 # once here to preserve the documented symlink behavior, then use filesystem
-# identity for every isolation decision (docs/herdr-backend.md "Known gaps").
+# identity (bin/fm-path-identity-lib.sh) for every isolation decision.
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
 
 real_path_or_raw() {  # <path>
