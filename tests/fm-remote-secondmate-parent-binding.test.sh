@@ -219,12 +219,18 @@ case "$DELIVERED" in
 esac
 
 # --- a finished child worker inside the remote secondmate home --------------
-CHILD_WT="$REMOTE_HOME/projects/alpha"
+# The worktree is a real ship task's own pooled worktree, distinct from the
+# project it was cloned from (fm-spawn's treehouse-get flow never leaves a ship
+# task with worktree=project). Recording them equal here would trip
+# fm-teardown's case-variant primary-clone refusal, which is a different
+# regression covered by tests/fm-teardown.test.sh.
+CHILD_PROJECT="$REMOTE_HOME/projects/alpha"
+CHILD_WT="$REMOTE_HOME/state/nonexistent-worktree-work-child"
 mkdir -p "$REMOTE_HOME/state"
 write_child_meta() {
   fm_write_meta "$REMOTE_HOME/state/work-child.meta" \
     "window=firstmate:fm-work-child" "endpoint_task_id=work-child" \
-    "worktree=$CHILD_WT" "project=$CHILD_WT" "harness=codex" "kind=ship" \
+    "worktree=$CHILD_WT" "project=$CHILD_PROJECT" "harness=codex" "kind=ship" \
     "mode=local-only" "yolo=off"
 }
 mkdir -p "$TMP_ROOT/childfake"
