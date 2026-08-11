@@ -274,6 +274,7 @@ A diagnostic request, report, recommendation, or implementation-ready finding is
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
 Before dispatching expensive correction or enforcement work whose acceptance criteria originate from an internal reviewer, steward, constitution, or spec rather than a current captain statement, confirm the criterion with the captain in one line when his last direct statement of it is older than the current work cycle.
+A reviewer's threat model never rewrites the captain's spec: approve past an out-of-scope finding and record it as out of scope, never escalate it as a decision that dresses scope creep up as diligence.
 Never make a product-impacting decision in silo: consult the project repo's own product sources (its `AGENTS.md`, `ROADMAP.md`, `ONBOARDING.md`, and constitution) and the captain before committing to one.
 
 Resolve every ship task's concrete delivery mode and yolo posture at intake, and pass both explicitly to the brief, the spawn, and any scout promotion, which all refuse to guess.

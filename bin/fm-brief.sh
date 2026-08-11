@@ -434,6 +434,10 @@ Flag both directions of mismatch: anything the plan builds that the vision does 
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Build only what the task asks for; the acceptance criteria define scope.
+   A review finding is evidence, not new scope: when it proposes an unrequested guarantee, threat model, abstraction, or subsystem, report it as out of scope and answer it with \`no-mistakes axi respond --action approve\` rather than building it.
+   Prefer the smallest change that satisfies the stated criteria.
+   If you are adding machinery to defend against something nobody asked about, stop and report instead.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -552,6 +556,10 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Build only what the task asks for; the acceptance criteria define scope.
+   A review finding is evidence, not new scope: when it proposes an unrequested guarantee, threat model, abstraction, or subsystem, report it as out of scope and answer it with \`no-mistakes axi respond --action approve\` rather than building it.
+   Prefer the smallest change that satisfies the stated criteria.
+   If you are adding machinery to defend against something nobody asked about, stop and report instead.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
