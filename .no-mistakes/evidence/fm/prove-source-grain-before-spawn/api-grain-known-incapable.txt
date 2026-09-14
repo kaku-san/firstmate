@@ -1,0 +1,7 @@
+Captain, the ship was not spawned or recorded. Firstmate could not verify fleet-lock ownership:
+
+`error: cannot locate harness process in ancestry`
+
+That forces this session into read-only mode, so no backlog, task, or project mutation was permitted.
+
+Separately, Acme’s account-level daily total cannot truthfully produce per-order `order_id`, `timestamp`, and `amount`; improvising those records would fabricate analytics. No changes were made.
