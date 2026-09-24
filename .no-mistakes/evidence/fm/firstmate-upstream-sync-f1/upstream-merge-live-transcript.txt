@@ -1,0 +1,75 @@
+=== current integrated history ===
+target=cb0414a80fb46c95f0f2e25714003a1f1824ae5a
+subject=docs: forbid silent product-mechanism substitution at intake
+parent=9d96b18c4ba6a391d85a0c0baba7f5f25c8d5daf
+merge=9d96b18c4ba6a391d85a0c0baba7f5f25c8d5daf
+subject=Merge remote-tracking branch 'upstream/main' into fm/firstmate-upstream-sync-f1
+parents=d03e808490d14b1b76479d498afc50a33f6da7dd d4f3b78e81c30ce73d4057be56b24c4f3af60d2c
+local-base-ancestor=yes
+upstream-tip-ancestor=yes
+
+=== real fm-brief CLI run ===
+scaffolded: /Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/data/merged-smoke/brief.md (ship, mode=no-mistakes; replace {TASK} and {FIRSTMATE_SPEC})
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+
+# Task
+## Captain's intent
+{TASK}
+
+## Firstmate spec
+{FIRSTMATE_SPEC}
+
+# Herdr lifecycle declaration - NOT ENABLED
+**HARD SAFETY GATE:** this scaffold cannot inspect the task text filled in above.
+If the task will start, stop, delete, restart, profile, or otherwise drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch.
+Do not add Herdr lifecycle commands to this unguarded brief by hand.
+
+# Setup
+You are in a disposable git worktree of firstmate, at a detached HEAD on a clean default branch.
+
+**Verify isolation before anything else.** Run `pwd -P` and `git rev-parse --show-toplevel`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
+The path check is authoritative: `git rev-parse --git-dir` and `git rev-parse --git-common-dir` can help inspect the repo, but they do not prove you are outside the primary checkout.
+If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append `blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree` to the status file and stop.
+
+1. First action: create your branch: `git checkout -b fm/merged-smoke --`
+2. Run `no-mistakes doctor`; if it reports the repo is not initialized here, run `no-mistakes init`.
+
+# Rules
+1. Never push to the default branch. Never merge a PR.
+2. Stay inside this worktree; modify nothing outside it.
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+4. Report status by appending one line:
+   `echo "{state} [at=<epoch>]: {one short line}" >> '/Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/state/merged-smoke.status' && { [ ! -e '/Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/config/fleet-ledger' ] || '/Users/akanshuarghjain/.no-mistakes/worktrees/a2966c90697b/01M39PEE47J8K6D3MT8CS4KSRB/bin/fm-fleet-ledger.sh' appended '/Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/config' '/Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/state/merged-smoke.status' >/dev/null 2>&1 || true; }`
+   States: working, needs-decision, blocked, paused, done, failed.
+   Substitute `<epoch>` with the current Unix time in seconds - run `date +%s` and write the number it printed; a stamp that is not plain digits records no time at all.
+   Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+   would act on (setup done, bug reproduced, fix implemented, validation passed) and the
+   needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;
+   firstmate reads your pane for that.
+   Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full
+   https:// URL exactly as the forge printed it, never a bare number such as "PR 108"; firstmate
+
+=== overwrite guard ===
+exit=1
+error: /Users/akanshuarghjain/.no-mistakes/evidence/01M39PEE47J8K6D3MT8CS4KSRB/live-fm-home/data/merged-smoke/brief.md already exists
+
+=== local post-merge rule commit ===
+commit=cb0414a80fb46c95f0f2e25714003a1f1824ae5a
+subject=docs: forbid silent product-mechanism substitution at intake
+
+diff --git a/AGENTS.md b/AGENTS.md
+index 55681df..ace14b5 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -317,8 +317,11 @@ Classify the deliverable:
+ - **Scout** produces knowledge in `data/<id>/report.md`, never a PR, and is appropriate for investigation, diagnosis, planning, reproduction, or audit work when the captain explicitly requests a separate knowledge or design deliverable or unresolved uncertainty could materially change whether or what to build.
+ 
+ If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
+ Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
++Do not substitute a different product mechanism than the one asked for.
++If how to build could change the product, scout existing open-source options before a ship.
++Say any substitution out loud and wait; do not ship it as if it were the ask.
+ A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
+ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
+ 
+ Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
