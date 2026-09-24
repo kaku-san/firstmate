@@ -19,6 +19,26 @@ test_selected_harness_block_only() {
   pass "renderer prints exactly the selected harness block"
 }
 
+test_supervision_host_protocol_only_on_an_opted_in_claude_home() {
+  local home config plain hosted other
+  home="$TMP_ROOT/host-home"
+  config="$TMP_ROOT/host-config"
+  mkdir -p "$home/state" "$config"
+  plain=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
+  assert_not_contains "$plain" "Supervision host" "a claude home without config/supervision-host rendered the host protocol"
+  : > "$config/supervision-host"
+  hosted=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
+  assert_contains "$hosted" "- Supervision host: on;" "an opted-in claude home did not render the host state line"
+  assert_contains "$hosted" "Mode: Claude Stop-hook-owned supervision." "the host protocol replaced the claude protocol instead of adding to it"
+  assert_contains "$hosted" "supervision-host: cycle boundary" "the host protocol did not tell main how to handle a park boundary"
+  assert_contains "$hosted" "never run the return from it" "the host protocol did not say a handed-back wake is not the captain's return"
+  [ "$(printf '%s\n' "$hosted" | grep -vF -e '- Supervision host: on;' | head -n "$(printf '%s\n' "$plain" | wc -l)")" = "$plain" ] \
+    || fail "the host protocol changed the claude block it should only append to"
+  other=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness codex)
+  assert_not_contains "$other" "Supervision host" "a non-claude primary rendered the host protocol"
+  pass "renderer adds the supervision-host protocol only on an opted-in claude home, leaving the claude block intact"
+}
+
 test_unknown_fallback() {
   local out
   out=$("$RENDER" --harness not-real)
@@ -40,6 +60,31 @@ test_conditional_stanzas() {
   assert_contains "$out" 'Mode: Codex foreground checkpoint.' "codex snippet missing"
   assert_not_contains "$out" "Source \`config/x-mode.env\`" "snippet kept the repo-relative x-mode config path"
   pass "renderer includes read-only, afk, and effective x-mode current-state stanzas"
+}
+
+test_quiet_mode_stanzas() {
+  local home config out
+  home="$TMP_ROOT/quiet-home"
+  config="$TMP_ROOT/quiet-config"
+  mkdir -p "$home/state" "$config"
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness codex --afk 1 --afk-mode quiet)
+  assert_contains "$out" "- Quiet mode: active" "quiet stanza missing"
+  assert_contains "$out" "load /quiet" "quiet stanza did not name the /quiet skill"
+  assert_contains "$out" "Ordinary captain chat does NOT exit it" "quiet stanza lost the explicit-only exit rule"
+  assert_not_contains "$out" "- Away mode: active" "quiet mode incorrectly rendered as away mode"
+  out=$(FM_HOME="$home" "$RENDER" --harness codex --afk 1 --afk-mode quiet --repair-line)
+  assert_contains "$out" "Quiet mode owns watcher supervision; load /quiet" "quiet repair line did not name /quiet"
+
+  out=$(FM_HOME="$home" "$RENDER" --harness codex --afk 1)
+  assert_contains "$out" "- Away mode: active" "omitting --afk-mode did not default to away (regression)"
+  assert_not_contains "$out" "Quiet mode" "omitting --afk-mode leaked quiet-mode text"
+
+  out=$(FM_HOME="$home" "$RENDER" --harness codex --afk 1 --afk-mode not-a-real-mode)
+  assert_contains "$out" "- Away mode: active" "unrecognized --afk-mode value did not fall back to away"
+
+  out=$(FM_HOME="$home" "$RENDER" --harness codex --afk 0)
+  assert_contains "$out" "- Away/quiet mode: inactive" "inactive stanza missing"
+  pass "renderer's away/quiet stanzas are mode-aware, default to away, and fall back safely on garbage input"
 }
 
 test_repair_lines() {
@@ -193,9 +238,11 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
+test_supervision_host_protocol_only_on_an_opted_in_claude_home
 test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas
+test_quiet_mode_stanzas
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
