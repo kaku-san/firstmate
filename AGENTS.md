@@ -318,6 +318,9 @@ Classify the deliverable:
 
 If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
+Do not substitute a different product mechanism than the one asked for.
+If how to build could change the product, scout existing open-source options before a ship.
+Say any substitution out loud and wait; do not ship it as if it were the ask.
 A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
 Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
