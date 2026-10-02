@@ -1,0 +1,13 @@
+scenario=updated Firstmate creates and controls an isolated Herdr task
+session=fm-lab-sync-runtime-4-63604-4483
+container=fm-lab-sync-runtime-4-63604-4483:w1 seeded_tab=w1:t1
+task_tab=w1:t2 task_pane=w1:p2 target=fm-lab-sync-runtime-4-63604-4483:w1:p2
+capture_marker_found=1
+01M3XWP3VD5RQE8BSMRS2DCEPD on  HEAD [?]
+❯ printf 'FIRSTMATE_UPSTREAM_SYNC_RUNTIME_OK\n'
+FIRSTMATE_UPSTREAM_SYNC_RUNTIME_OK
+01M3XWP3VD5RQE8BSMRS2DCEPD on  HEAD [?]
+❯
+list_live:
+fm-lab-sync-runtime-4-63604-4483:w1:p2	fm-sync-live
+task_killed=yes

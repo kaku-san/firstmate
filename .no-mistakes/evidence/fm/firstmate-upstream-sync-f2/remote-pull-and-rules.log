@@ -1,0 +1,26 @@
+scenario=fork update branch is pullable and preserves upstream plus fork-local rules
+From https://github.com/kaku-san/firstmate
+ * branch            fm/firstmate-upstream-sync-f2 -> FETCH_HEAD
+ * [new branch]      fm/firstmate-upstream-sync-f2 -> origin/fm/firstmate-upstream-sync-f2
+From https://github.com/kaku-san/firstmate
+ * branch            fm/firstmate-upstream-sync-f2 -> FETCH_HEAD
+Already up to date.
+pulled_head=9f4c25c7a67210734af50724b1a9a7d4ee2bfdf2
+parents=571e7642bce383bba872eaf7f32073273f19f157 241d4617d6c160471d7da8ffe637b59f8f4a7af9
+merge_topology=expected fork-base + upstream-tip
+files_different_from_upstream_tip:
+AGENTS.md
+fork_rule_delta_numstat=6	0	AGENTS.md
+diff --git a/AGENTS.md b/AGENTS.md
+index 507a7f5..039b43e 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -177,0 +178,3 @@ Before commissioning an investigation, consult existing reports and established
++Before dispatching a ship that depends on a third-party API, prove that API can answer at the grain the product needs.
++If it cannot, stop and tell the captain.
++Do not spawn.
+@@ -184,0 +188,3 @@ Classify the deliverable:
++- Do not substitute a different product mechanism than the one asked for.
++- If how to build could change the product, scout existing open-source options before a ship.
++- Say any substitution out loud and wait; do not ship it as if it were the ask.
+pull_and_rule_preservation=verified
